@@ -1,7 +1,7 @@
 {
-  "name": "autoparts-precision",
+  "name": "autoparts-lat-pro",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,9 +16,10 @@
     "xlsx": "latest"
   },
   "devDependencies": {
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest"
+    "vite": "latest",
+    "tailwindcss": "latest",
+    "autoprefixer": "latest",
+    "postcss": "latest"
   }
 }
