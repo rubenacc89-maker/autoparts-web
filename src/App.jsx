@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Search, ShoppingCart, Package, TrendingUp, Plus, Minus, Trash2,
-  ExternalLink, ShieldCheck, ArrowRight, Zap, LogOut, CheckCircle2,
-  MessageSquare, Instagram, MapPin, BarChart2, Target, UserMinus,
-  FileSpreadsheet, UploadCloud, Loader2, History, Eye, AlertTriangle,
-  FileText, X, Lock
+  ExternalLink, ArrowRight, Zap, LogOut, MessageSquare, MapPin, 
+  BarChart2, Target, FileSpreadsheet, UploadCloud, Loader2, History, 
+  Eye, FileText, X, Lock, AlertCircle, CheckCircle
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -12,18 +11,17 @@ import {
   onSnapshot, writeBatch, addDoc, serverTimestamp 
 } from 'firebase/firestore';
 import { 
-  getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
+  getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- CONFIGURACIÓN DE FIREBASE (TUS DATOS) ---
+// --- CONFIGURACIÓN DE FIREBASE (ASEGÚRATE QUE SEAN TUS LLAVES) ---
 const firebaseConfig = {
   apiKey: "AIzaSyBHFisfAJoX3dgIB97N4HRez8FIJkJokhA",
   authDomain: "autoparts-b4a5c.firebaseapp.com",
   projectId: "autoparts-b4a5c",
   storageBucket: "autoparts-b4a5c.firebasestorage.app",
   messagingSenderId: "131717003315",
-  appId: "1:131717003315:web:c6f30ca327055cbae5cb46",
-  measurementId: "G-EY5D63KTYX"
+  appId: "1:131717003315:web:c6f30ca327055cbae5cb46"
 };
 
 const app = initializeApp(firebaseConfig);
@@ -41,36 +39,9 @@ const App = () => {
   const [stats, setStats] = useState({ totalVisits: 0, totalOrdersClicked: 0, totalCartsStarted: 0 });
   const [searchLogs, setSearchLogs] = useState([]);
   const [isCartBouncing, setIsCartBouncing] = useState(false);
-  const [dbError, setDbError] = useState(null);
-  const [showLegal, setShowLegal] = useState(false);
+  const [statusMsg, setStatusMsg] = useState({ text: '', type: '' });
 
-  const totalItemsCount = useMemo(() => cart.reduce((acc, item) => acc + (Number(item.qty) || 0), 0), [cart]);
-
-  const filteredProducts = useMemo(() => {
-    const validProducts = products.filter(p => p && typeof p === 'object');
-    if (!searchTerm.trim()) return validProducts;
-    const words = searchTerm.toLowerCase().split(' ').filter(w => w.length > 0);
-    return validProducts.filter(p => {
-      const text = `${p.name || ''} ${p.code || ''} ${p.brand || ''} ${p.category || ''} ${p.model || ''}`.toLowerCase();
-      return words.every(w => text.includes(w));
-    });
-  }, [products, searchTerm]);
-
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) { setDbError("Conexión limitada..."); }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
-
+  // Sincronización de Hash (Navegación)
   useEffect(() => {
     const handleHash = () => {
       const h = window.location.hash;
@@ -84,186 +55,210 @@ const App = () => {
     return () => window.removeEventListener('hashchange', handleHash);
   }, [isAdminAuthenticated]);
 
+  // Auth y Listeners
+  useEffect(() => {
+    signInAnonymously(auth).catch(() => setStatusMsg({ text: 'Error de conexión con Google', type: 'error' }));
+    onAuthStateChanged(auth, setUser);
+  }, []);
+
   useEffect(() => {
     if (!user) return;
     const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
-    if (view === 'landing') {
-      updateDoc(statsRef, { totalVisits: increment(1) }).catch(() => 
-        setDoc(statsRef, { totalVisits: 1, totalOrdersClicked: 0, totalCartsStarted: 0 }, { merge: true })
-      );
-    }
+    if (view === 'landing') updateDoc(statsRef, { totalVisits: increment(1) }).catch(() => setDoc(statsRef, { totalVisits: 1 }, { merge: true }));
+
     const unsubProds = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'products'), (snap) => {
       setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
-    const unsubStats = onSnapshot(statsRef, (s) => { if (s.exists()) setStats(s.data()); });
-    const unsubLogs = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'search_logs'), (snap) => {
-      setSearchLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.timestamp?.seconds||0) - (a.timestamp?.seconds||0)).slice(0, 15));
-    });
-    return () => { unsubProds(); unsubStats(); unsubLogs(); };
-  }, [user]);
+    const unsubStats = onSnapshot(statsRef, (s) => s.exists() && setStats(s.data()));
+    return () => { unsubProds(); unsubStats(); };
+  }, [user, view]);
 
+  // Lógica de Carrito
   const addToCart = (p) => {
-    if (!p) return;
-    setIsCartBouncing(true); setTimeout(() => setIsCartBouncing(false), 400);
+    setIsCartBouncing(true); setTimeout(() => setIsCartBouncing(false), 300);
     setCart(prev => {
-      const id = p.id || p.code;
-      const exist = prev.find(i => i.id === id);
-      if (exist) return prev.map(i => i.id === id ? {...i, qty: i.qty + 1} : i);
-      return [...prev, {...p, id, qty: 1}];
+      const exist = prev.find(i => i.id === (p.id || p.code));
+      if (exist) return prev.map(i => i.id === (p.id || p.code) ? {...i, qty: i.qty + 1} : i);
+      return [...prev, {...p, id: p.id || p.code, qty: 1}];
     });
   };
 
-  const handleWhatsApp = async () => {
-    const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
-    updateDoc(statsRef, { totalOrdersClicked: increment(1) }).catch(()=>{});
+  const handleWhatsApp = () => {
     const phone = "584120000000"; 
     let msg = `🚗 *NUEVO PEDIDO - AUTOPARTS PRECISION*\n\n`;
-    cart.forEach(i => { msg += `• *${i.name}*\n  Ref: ${i.code}\n  Cant: ${i.qty} x $${(Number(i.price) || 0).toFixed(2)}\n\n`; });
+    cart.forEach(i => msg += `• *${i.name}* (Ref: ${i.code}) x${i.qty}\n`);
+    msg += `\n💰 *Total: $${cart.reduce((a,b)=>a+(b.price*b.qty),0).toFixed(2)}*`;
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
   };
 
   return (
-    <div className="min-h-screen bg-[#f8faff] text-gray-900 font-sans overflow-x-hidden selection:bg-indigo-100">
-      <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-
-      <header className="bg-white/80 backdrop-blur-xl border-b px-6 py-4 flex items-center justify-between sticky top-0 z-[60]">
-        <div className="flex items-center space-x-3 cursor-pointer" onClick={() => window.location.hash = ''}>
-          <div className="bg-indigo-600 p-2 rounded-xl shadow-lg"><Package className="text-white w-6 h-6" /></div>
-          <h1 className="text-xl font-black italic uppercase">AUTO<span className="text-indigo-600">PARTS</span></h1>
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100">
+      {statusMsg.text && (
+        <div className={`fixed top-0 left-0 right-0 z-[200] p-4 text-center font-bold text-white shadow-lg animate-bounce ${statusMsg.type === 'error' ? 'bg-red-500' : 'bg-emerald-500'}`}>
+          {statusMsg.text}
+          <button onClick={() => setStatusMsg({text:'', type:''})} className="ml-4 underline">Cerrar</button>
         </div>
-        <button onClick={() => window.location.hash = '#/cart'} className={`relative bg-white p-3 rounded-2xl border transition-all ${isCartBouncing ? 'scale-125' : ''}`}>
+      )}
+
+      <header className="bg-white/80 backdrop-blur-md border-b p-4 sticky top-0 z-50 flex justify-between items-center">
+        <div onClick={() => window.location.hash = ''} className="flex items-center gap-2 cursor-pointer">
+          <div className="bg-indigo-600 p-2 rounded-xl shadow-indigo-200 shadow-lg"><Package className="text-white" /></div>
+          <span className="font-black italic uppercase text-lg">AUTO<span className="text-indigo-600">PARTS</span></span>
+        </div>
+        <button onClick={() => window.location.hash = '#/cart'} className={`p-3 rounded-2xl border bg-white relative transition-transform ${isCartBouncing ? 'scale-125' : ''}`}>
           <ShoppingCart size={20} />
-          {totalItemsCount > 0 && <span className="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center">{totalItemsCount}</span>}
+          {cart.length > 0 && <span className="absolute -top-2 -right-2 bg-red-600 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center font-bold">{cart.reduce((a,b)=>a+b.qty, 0)}</span>}
         </button>
       </header>
 
       <main>
-        {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => window.location.hash = '#/catalog'} />}
-        {view === 'catalog' && <CatalogListView products={filteredProducts} onAddToCart={addToCart} onGoBack={() => window.location.hash = ''} searchTerm={searchTerm} setSearchTerm={setSearchTerm} />}
-        {view === 'admin-login' && <AdminLogin onLogin={(u, p) => { if (u === 'admin' && p === 'AutoPrecision2024*') setIsAdminAuthenticated(true); }} />}
-        {view === 'admin-dashboard' && <AdminDashboard products={products} stats={stats} searchLogs={searchLogs} onLogout={() => { setIsAdminAuthenticated(false); window.location.hash = ''; }} />}
-        {view === 'cart' && <CartView cart={cart} updateQty={(id, d) => setCart(prev => prev.map(i => i.id === id ? {...i, qty: Math.max(1, i.qty + d)} : i))} removeFromCart={(id) => setCart(prev => prev.filter(i => i.id !== id))} onConfirm={handleWhatsApp} />}
-        {(view === 'landing' || view === 'catalog' || view === 'cart') && <Footer onLegalClick={() => setShowLegal(true)} onAdminClick={() => window.location.hash = '#/admin'} />}
+        {view === 'landing' && <LandingView onSearch={() => window.location.hash = '#/catalog'} searchTerm={searchTerm} setSearchTerm={setSearchTerm} />}
+        {view === 'catalog' && <CatalogView products={products.filter(p => `${p.name} ${p.code} ${p.model}`.toLowerCase().includes(searchTerm.toLowerCase()))} onAdd={addToCart} onBack={() => window.location.hash = ''} />}
+        {view === 'admin-login' && <AdminLogin onLogin={(u, p) => u === 'admin' && p === 'AutoPrecision2024*'} onAuthSuccess={() => setIsAdminAuthenticated(true)} />}
+        {view === 'admin-dashboard' && <AdminDashboard products={products} stats={stats} onLogout={() => setIsAdminAuthenticated(false)} setStatus={setStatusMsg} />}
+        {view === 'cart' && <CartView cart={cart} setCart={setCart} onConfirm={handleWhatsApp} />}
       </main>
 
-      <nav className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-3xl border px-8 py-5 rounded-[2.5rem] shadow-2xl flex items-center gap-12 z-[100]">
-        <button onClick={() => window.location.hash = ''} className={`${view === 'landing' ? 'text-indigo-600' : 'text-gray-400'}`}><Package size={28} /></button>
-        <button onClick={() => window.location.hash = '#/catalog'} className={`${view === 'catalog' ? 'text-indigo-600' : 'text-gray-400'}`}><Search size={28} /></button>
-        <button onClick={() => window.location.hash = '#/cart'} className={`${view === 'cart' ? 'text-indigo-600' : 'text-gray-400'}`}><ShoppingCart size={28} /></button>
-      </nav>
+      <Footer onAdmin={() => window.location.hash = '#/admin'} />
     </div>
   );
 };
 
-// --- PANEL ADMIN CON LIMPIADOR DE DATOS ---
-const AdminDashboard = ({ products, stats, searchLogs, onLogout }) => {
-  const [importing, setImporting] = useState(false);
-  const [showImport, setShowImport] = useState(false);
+// --- COMPONENTE ADMIN REFORZADO ---
+const AdminDashboard = ({ products, stats, onLogout, setStatus }) => {
+  const [loading, setLoading] = useState(false);
 
-  const handleExcel = async (e) => {
+  const handleImport = async (e) => {
     const file = e.target.files[0]; if (!file) return;
-    setImporting(true);
+    setLoading(true);
     const reader = new FileReader();
+    
     reader.onload = async (evt) => {
       try {
         const XLSX = window.XLSX;
-        const wb = XLSX.read(evt.target.result, { type: 'binary' });
-        const data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-        const batch = writeBatch(db);
+        if (!XLSX) throw new Error("Librería de Excel no cargada. Recarga la página.");
         
-        data.forEach((row) => {
-          // LÓGICA DE LIMPIEZA: Convierte comas a puntos y quita espacios
-          const rawPrice = String(row.price || row.precio || "0").replace(',', '.').trim();
-          const cleanPrice = parseFloat(rawPrice) || 0;
+        const wb = XLSX.read(evt.target.result, { type: 'binary' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rawData = XLSX.utils.sheet_to_json(sheet);
+        
+        if (rawData.length === 0) throw new Error("El archivo está vacío.");
 
-          const cleanProd = {
-            code: String(row.code || row.codigo || '').trim(),
-            name: String(row.name || row.nombre || '').trim(),
-            brand: String(row.brand || row.marca || '').trim(),
-            model: String(row.model || row.modelo || '').trim(),
-            category: String(row.category || row.categoria || 'Repuestos').trim(),
-            price: cleanPrice,
-            searches: 0
+        const batch = writeBatch(db);
+        let count = 0;
+
+        rawData.forEach((row) => {
+          // BUSCADOR DE COLUMNAS INTELIGENTE (No importa si es Mayúscula o Minúscula)
+          const findKey = (names) => {
+            const key = Object.keys(row).find(k => names.includes(k.toLowerCase().trim()));
+            return key ? row[key] : null;
           };
 
-          if (cleanProd.code && cleanProd.name) {
-            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'products', cleanProd.code);
-            batch.set(ref, cleanProd, { merge: true });
+          const code = String(findKey(['code', 'codigo', 'cod']) || '').trim();
+          const name = String(findKey(['name', 'nombre', 'descripcion']) || '').trim();
+          const priceRaw = String(findKey(['price', 'precio', 'monto']) || '0').replace(',', '.');
+
+          if (code && name) {
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'products', code);
+            batch.set(ref, {
+              code,
+              name,
+              brand: findKey(['brand', 'marca']) || 'Genérico',
+              model: findKey(['model', 'modelo', 'carro']) || 'Universal',
+              category: findKey(['category', 'categoria', 'tipo']) || 'Repuestos',
+              price: parseFloat(priceRaw) || 0,
+              searches: 0,
+              updatedAt: serverTimestamp()
+            }, { merge: true });
+            count++;
           }
         });
+
         await batch.commit();
-        alert("¡Inventario actualizado con éxito!"); setShowImport(false);
-      } catch (err) { alert("Error al leer el archivo. Revisa los encabezados."); } finally { setImporting(false); }
+        setStatus({ text: `¡Éxito! Se cargaron ${count} productos.`, type: 'success' });
+      } catch (err) {
+        setStatus({ text: `Error: ${err.message}`, type: 'error' });
+      } finally { setLoading(false); }
     };
     reader.readAsBinaryString(file);
   };
 
   return (
-    <div className="p-8 max-w-7xl mx-auto text-left">
-      <div className="flex justify-between items-center mb-12">
-        <h2 className="text-3xl font-black uppercase italic leading-none">Admin <span className="text-indigo-600">Panel</span></h2>
-        <div className="flex gap-4">
-          <button onClick={() => setShowImport(!showImport)} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 shadow-lg"><FileSpreadsheet size={18} /> Importar Excel</button>
-          <button onClick={onLogout} className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all"><LogOut size={20} /></button>
-        </div>
+    <div className="p-8 max-w-5xl mx-auto text-left animate-in fade-in duration-500">
+      <div className="flex justify-between items-center mb-10">
+        <h2 className="text-3xl font-black italic">PANEL <span className="text-indigo-600">ADMIN</span></h2>
+        <button onClick={onLogout} className="p-3 bg-red-50 text-red-500 rounded-xl"><LogOut /></button>
       </div>
-      {showImport && (
-        <div className="mb-12 bg-white border-4 border-dashed border-indigo-100 rounded-[3rem] p-12 text-center">
-           {!importing ? (
-             <div>
-               <UploadCloud size={48} className="mx-auto text-indigo-600 mb-4" />
-               <p className="font-bold text-gray-500 mb-6">Asegúrate que los encabezados sean: code, name, brand, model, category, price</p>
-               <label className="bg-gray-950 text-white px-10 py-4 rounded-xl font-black cursor-pointer inline-block">Seleccionar Archivo<input type="file" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleExcel} /></label>
-             </div>
-           ) : ( <div className="py-10 text-indigo-600 font-black animate-pulse text-2xl">CARGANDO...</div> )}
-        </div>
-      )}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
-        <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm text-center">
-          <p className="text-[10px] font-black uppercase text-indigo-600 mb-2">Visitas</p>
+
+      <div className="bg-white p-10 rounded-[3rem] border-4 border-dashed border-indigo-100 text-center mb-10">
+        {loading ? (
+          <div className="flex flex-col items-center gap-4">
+            <Loader2 className="animate-spin text-indigo-600" size={48} />
+            <p className="font-black text-indigo-600 uppercase tracking-widest">Procesando Inventario...</p>
+          </div>
+        ) : (
+          <div>
+            <UploadCloud size={48} className="mx-auto text-indigo-600 mb-4" />
+            <h3 className="text-xl font-bold mb-2 uppercase">Cargar Excel de Repuestos</h3>
+            <p className="text-slate-400 text-sm mb-6">El sistema detectará automáticamente tus columnas aunque estén en español.</p>
+            <label className="bg-indigo-600 text-white px-10 py-4 rounded-2xl font-black cursor-pointer hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100">
+              Seleccionar Archivo
+              <input type="file" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleImport} />
+            </label>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-white p-8 rounded-3xl border shadow-sm">
+          <div className="flex items-center gap-2 text-indigo-600 font-bold mb-2"><Eye size={16}/> VISITAS</div>
           <p className="text-4xl font-black">{stats.totalVisits || 0}</p>
         </div>
-        <div className="bg-white p-8 rounded-[2.5rem] border shadow-sm text-center">
-          <p className="text-[10px] font-black uppercase text-emerald-600 mb-2">WhatsApp</p>
+        <div className="bg-white p-8 rounded-3xl border shadow-sm">
+          <div className="flex items-center gap-2 text-emerald-600 font-bold mb-2"><MessageSquare size={16}/> WHATSAPP</div>
           <p className="text-4xl font-black">{stats.totalOrdersClicked || 0}</p>
+        </div>
+        <div className="bg-white p-8 rounded-3xl border shadow-sm">
+          <div className="flex items-center gap-2 text-amber-600 font-bold mb-2"><Package size={16}/> PRODUCTOS</div>
+          <p className="text-4xl font-black">{products.length}</p>
         </div>
       </div>
     </div>
   );
 };
 
-// Componentes básicos para que no falte nada
-const LandingView = ({ searchTerm, setSearchTerm, onSearch }) => (
-  <div className="min-h-[80vh] flex flex-col items-center justify-center px-6 text-center">
-    <h2 className="text-6xl md:text-8xl font-black tracking-tighter mb-8 leading-none italic">AutoParts <span className="text-indigo-600">Precision</span></h2>
-    <p className="text-gray-400 font-medium text-lg mb-12 max-w-2xl">Busca tu repuesto en el catálogo real de Valencia.</p>
-    <form onSubmit={onSearch} className="relative w-full max-w-2xl bg-white p-4 rounded-[2.5rem] shadow-2xl flex items-center border">
-      <Search className="text-indigo-300 ml-4" />
-      <input type="text" placeholder="Ej: Amortiguador Hilux" className="w-full py-4 px-6 border-none bg-transparent focus:ring-0 outline-none text-xl font-bold" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-      <button type="submit" className="bg-gray-950 text-white p-5 rounded-2xl hover:bg-indigo-600 transition-all"><ArrowRight size={24} /></button>
+// Vistas secundarias
+const LandingView = ({ onSearch, searchTerm, setSearchTerm }) => (
+  <div className="min-h-[70vh] flex flex-col items-center justify-center p-6 text-center">
+    <h1 className="text-6xl md:text-8xl font-black tracking-tighter italic mb-6">Tu pieza, <br/><span className="text-indigo-600">al momento.</span></h1>
+    <p className="text-slate-400 font-medium mb-12 max-w-xl">Catálogo especializado de repuestos en Valencia. Busca, elige y consulta por WhatsApp.</p>
+    <form onSubmit={(e) => { e.preventDefault(); onSearch(); }} className="w-full max-w-2xl bg-white p-2 rounded-[2.5rem] shadow-2xl flex items-center border border-indigo-50">
+      <Search className="ml-6 text-indigo-300" />
+      <input type="text" placeholder="Ej: Filtro de aceite Aceite..." className="w-full p-6 bg-transparent outline-none font-bold text-xl" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+      <button className="bg-indigo-600 text-white p-6 rounded-[2rem] hover:bg-indigo-700 transition-all"><ArrowRight/></button>
     </form>
   </div>
 );
 
-const CatalogListView = ({ products, onAddToCart, onGoBack, searchTerm, setSearchTerm }) => (
-  <div className="pb-32 max-w-6xl mx-auto px-4 text-left">
-    <div className="mt-8 mb-10 flex items-center gap-6">
-      <div className="bg-white p-1 rounded-full flex items-center px-6 flex-1 border shadow-sm">
-        <Search className="text-indigo-400" />
-        <input type="text" placeholder="Buscando..." className="w-full py-4 px-4 border-none bg-transparent focus:ring-0 outline-none font-bold" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-      </div>
-      <button onClick={onGoBack} className="text-[10px] font-black uppercase text-gray-400">Cerrar</button>
+const CatalogView = ({ products, onAdd, onBack }) => (
+  <div className="p-6 max-w-6xl mx-auto pb-32 animate-in fade-in slide-in-from-bottom-4 text-left">
+    <div className="flex justify-between items-center mb-8">
+      <h2 className="text-3xl font-black italic uppercase">Catálogo</h2>
+      <button onClick={onBack} className="text-slate-400 font-bold uppercase text-[10px] tracking-widest">Volver</button>
     </div>
     <div className="space-y-4">
-      {products.map((p, idx) => (
-        <div key={p.code || idx} className="bg-white p-8 rounded-[2.5rem] border flex flex-col md:flex-row items-center justify-between gap-6 hover:border-indigo-600 transition-all">
+      {products.length === 0 ? <p className="text-center py-20 text-slate-300 font-bold">No hay repuestos que coincidan con tu búsqueda.</p> : products.map(p => (
+        <div key={p.code} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 flex flex-col md:flex-row justify-between items-center gap-6 hover:border-indigo-600 transition-all shadow-sm">
           <div className="flex-1">
-            <h3 className="text-2xl font-black italic mb-2">{p.name}</h3>
-            <div className="flex gap-2"><span className="text-[10px] font-black bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg uppercase">{p.category}</span><span className="text-[10px] font-bold text-gray-400 border px-3 py-1 rounded-lg uppercase">{p.model}</span></div>
+            <h4 className="text-2xl font-black italic">{p.name}</h4>
+            <div className="flex gap-2 mt-2">
+              <span className="text-[10px] font-black bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg uppercase tracking-widest">{p.category}</span>
+              <span className="text-[10px] font-bold text-slate-400 border px-3 py-1 rounded-lg uppercase tracking-widest">{p.model}</span>
+            </div>
           </div>
-          <div className="flex items-center gap-6">
-            <span className="text-4xl font-black italic tracking-tighter">${(Number(p.price) || 0).toFixed(2)}</span>
-            <button onClick={() => onAddToCart(p)} className="bg-gray-950 text-white p-5 rounded-full hover:bg-indigo-600"><Plus size={28} /></button>
+          <div className="flex items-center gap-8">
+            <span className="text-4xl font-black italic tracking-tighter">${(p.price || 0).toFixed(2)}</span>
+            <button onClick={() => onAdd(p)} className="bg-slate-900 text-white p-5 rounded-full hover:bg-indigo-600 transition-all shadow-xl"><Plus size={28}/></button>
           </div>
         </div>
       ))}
@@ -271,58 +266,59 @@ const CatalogListView = ({ products, onAddToCart, onGoBack, searchTerm, setSearc
   </div>
 );
 
-const CartView = ({ cart, updateQty, removeFromCart, onConfirm }) => (
-  <div className="p-8 max-w-4xl mx-auto py-24 text-left">
-    <h2 className="text-6xl font-black italic mb-16">Tu <span className="text-indigo-600">Cesta</span></h2>
-    {cart.length === 0 ? <p className="text-center py-20 text-gray-300 font-bold">Vuelve al catálogo para agregar piezas.</p> : (
+const CartView = ({ cart, setCart, onConfirm }) => (
+  <div className="p-8 max-w-4xl mx-auto py-20 animate-in slide-in-from-bottom-8 text-left">
+    <h2 className="text-6xl font-black italic mb-12">Tu <span className="text-indigo-600">Cesta</span></h2>
+    {cart.length === 0 ? (
+      <div className="text-center py-20">
+        <p className="text-slate-300 font-bold mb-8">Aún no has agregado repuestos.</p>
+        <button onClick={() => window.location.hash = '#/catalog'} className="bg-indigo-600 text-white px-10 py-5 rounded-2xl font-black">IR AL CATÁLOGO</button>
+      </div>
+    ) : (
       <div className="space-y-6">
         {cart.map(item => (
-          <div key={item.id} className="bg-white p-8 rounded-[3rem] border flex items-center justify-between">
-            <div className="flex-1"><h4 className="font-bold text-xl italic">{item.name}</h4><p className="text-indigo-600 font-black text-2xl mt-2">${(Number(item.price)||0).toFixed(2)}</p></div>
-            <div className="flex items-center bg-gray-100 rounded-2xl px-4 py-2 gap-4">
-              <button onClick={() => updateQty(item.id, -1)} className="p-2"><Minus size={16}/></button>
+          <div key={item.id} className="bg-white p-8 rounded-[3rem] border flex items-center justify-between shadow-sm">
+            <div><h4 className="font-bold text-xl italic">{item.name}</h4><p className="text-indigo-600 font-black text-2xl">${item.price.toFixed(2)}</p></div>
+            <div className="flex items-center bg-slate-100 rounded-2xl px-4 py-2 gap-4">
+              <button onClick={() => setCart(c => c.map(i => i.id === item.id ? {...i, qty: Math.max(1, i.qty-1)} : i))}><Minus size={16}/></button>
               <span className="font-black text-xl">{item.qty}</span>
-              <button onClick={() => updateQty(item.id, 1)} className="p-2"><Plus size={16}/></button>
+              <button onClick={() => setCart(c => c.map(i => i.id === item.id ? {...i, qty: i.qty+1} : i))}><Plus size={16}/></button>
             </div>
-            <button onClick={() => removeFromCart(item.id)} className="ml-6 text-red-400 hover:text-red-600"><Trash2 size={24} /></button>
           </div>
         ))}
-        <div className="mt-12 bg-gray-950 p-12 rounded-[4rem] text-center text-white shadow-2xl">
-          <p className="text-gray-500 uppercase font-black text-xs tracking-widest mb-4">Total Pedido</p>
-          <h3 className="text-7xl font-black italic mb-12">${cart.reduce((a,b)=>a+(Number(b.price)*b.qty),0).toFixed(2)}</h3>
-          <button onClick={onConfirm} className="w-full bg-emerald-500 py-8 rounded-[2rem] font-black text-2xl flex items-center justify-center gap-4">Confirmar Pedido <ExternalLink /></button>
+        <div className="bg-slate-950 p-12 rounded-[4rem] text-center text-white mt-10 shadow-2xl">
+          <p className="text-slate-500 uppercase font-black text-xs tracking-widest mb-4">Total Pedido</p>
+          <h3 className="text-7xl font-black italic mb-12 tracking-tighter">${cart.reduce((a,b)=>a+(b.price*b.qty),0).toFixed(2)}</h3>
+          <button onClick={onConfirm} className="w-full bg-emerald-500 py-8 rounded-[2rem] font-black text-2xl flex items-center justify-center gap-4 hover:bg-emerald-400 transition-all">CONSULTAR WHATSAPP <ExternalLink/></button>
         </div>
       </div>
     )}
   </div>
 );
 
-const AdminLogin = ({ onLogin }) => {
+const AdminLogin = ({ onLogin, onAuthSuccess }) => {
   const [u, setU] = useState(''); const [p, setP] = useState('');
   return (
     <div className="min-h-[80vh] flex items-center justify-center p-6">
       <div className="bg-white p-12 rounded-[4rem] shadow-2xl border w-full max-w-md text-center">
         <Lock className="mx-auto mb-8 text-indigo-600" size={48} />
-        <h2 className="text-2xl font-black uppercase mb-8">Admin Access</h2>
-        <form onSubmit={(e) => { e.preventDefault(); onLogin(u, p); }} className="space-y-4 text-left">
-          <input type="text" placeholder="Usuario" className="w-full bg-gray-50 p-5 rounded-2xl outline-none border focus:border-indigo-600 font-bold" value={u} onChange={(e) => setU(e.target.value)} />
-          <input type="password" placeholder="Clave" className="w-full bg-gray-50 p-5 rounded-2xl outline-none border focus:border-indigo-600 font-bold" value={p} onChange={(e) => setP(e.target.value)} />
-          <button className="w-full bg-gray-950 text-white py-5 rounded-2xl font-black text-xl mt-4">Acceder</button>
+        <h2 className="text-2xl font-black uppercase mb-8 italic">Acceso Admin</h2>
+        <form onSubmit={(e) => { e.preventDefault(); if(onLogin(u,p)) onAuthSuccess(); else alert("Error"); }} className="space-y-4 text-left">
+          <input type="text" placeholder="Usuario" className="w-full bg-slate-50 p-5 rounded-2xl outline-none border focus:border-indigo-600 font-bold" value={u} onChange={(e) => setU(e.target.value)} />
+          <input type="password" placeholder="Clave" className="w-full bg-slate-50 p-5 rounded-2xl outline-none border focus:border-indigo-600 font-bold" value={p} onChange={(e) => setP(e.target.value)} />
+          <button className="w-full bg-slate-950 text-white py-5 rounded-2xl font-black text-xl mt-4">ENTRAR</button>
         </form>
       </div>
     </div>
   );
 };
 
-const Footer = ({ onLegalClick, onAdminClick }) => (
-  <footer className="mt-20 border-t py-16 px-6 text-center text-gray-400">
-    <div className="max-w-6xl mx-auto flex flex-col items-center gap-8">
-      <div className="flex gap-8">
-        <button onClick={onLegalClick} className="text-[10px] font-black uppercase tracking-widest hover:text-indigo-600">Privacidad</button>
-        <div className="flex items-center gap-2"><MapPin size={16} /> <span className="text-[10px] font-black uppercase tracking-widest">Valencia, VE</span></div>
-      </div>
-      <button onClick={onAdminClick} className="text-[10px] font-black uppercase tracking-[0.4em] text-gray-200">&copy; 2024 AutoParts Precision</button>
+const Footer = ({ onAdmin }) => (
+  <footer className="py-20 text-center">
+    <div className="flex justify-center gap-8 mb-4">
+      <span className="text-[10px] font-black uppercase text-slate-300 tracking-[0.3em]">Valencia, Venezuela</span>
     </div>
+    <button onClick={onAdmin} className="text-[10px] font-black text-slate-200 uppercase tracking-[0.5em] hover:text-slate-400">&copy; 2024 AUTOPARTS PRECISION</button>
   </footer>
 );
 
