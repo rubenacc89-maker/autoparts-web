@@ -1,5 +1,5 @@
 {
-  "name": "autoparts-precision-v39",
+  "name": "autoparts-precision-v40",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -13,7 +13,7 @@
     "react-dom": "^18.2.0",
     "firebase": "latest",
     "lucide-react": "latest",
-    "xlsx": "latest",
+    "xlsx": "0.18.5",
     "clsx": "latest",
     "tailwind-merge": "latest"
   },
