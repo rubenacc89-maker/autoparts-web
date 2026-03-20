@@ -31,17 +31,28 @@ const appId = "autoparts-b4a5c";
 
 // --- UTILIDADES DE INTELIGENCIA LINGÜÍSTICA ---
 
-// 1. Normalización: Elimina acentos y convierte Ñ en N para comparaciones "ciegas"
-const normalizeText = (text) => {
+// 1. Limpieza de codificación: Repara Ñ y acentos rotos por importación de Excel/CSV
+const repairEncoding = (str) => {
+  if (!str) return "";
+  try {
+    // Intenta corregir errores de conversión UTF-8 comunes (ej: Ã± -> ñ)
+    return decodeURIComponent(escape(str));
+  } catch (e) {
+    return str; // Si falla, devuelve el original
+  }
+};
+
+// 2. Normalización para Búsqueda: Quita acentos y cambia Ñ por N solo para comparar
+const normalizeForSearch = (text) => {
   if (!text) return "";
   return String(text)
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // Elimina acentos y tildes (incluida la de la ñ para búsqueda)
+    .replace(/[\u0300-\u036f]/g, "") // Elimina tildes y diéresis
     .toLowerCase()
     .trim();
 };
 
-// 2. Distancia de Levenshtein: Permite errores tipográficos
+// 3. Algoritmo de Proximidad (Levenshtein)
 const getLevenshteinDistance = (a, b) => {
   const matrix = Array.from({ length: a.length + 1 }, () => 
     Array.from({ length: b.length + 1 }, (_, i) => i)
@@ -68,6 +79,14 @@ const App = () => {
   const [isCartBouncing, setIsCartBouncing] = useState(false);
   const [statusMsg, setStatusMsg] = useState({ text: '', type: '' });
   const [isXLSXLoaded, setIsXLSXLoaded] = useState(false);
+
+  // Inyección de Meta Tags y Estilos de Caracteres
+  useEffect(() => {
+    document.documentElement.lang = "es";
+    const meta = document.createElement('meta');
+    meta.charset = "UTF-8";
+    document.head.appendChild(meta);
+  }, []);
 
   useEffect(() => {
     if (window.XLSX) { setIsXLSXLoaded(true); return; }
@@ -115,34 +134,27 @@ const App = () => {
     return () => { unsubProds(); unsubStats(); unsubLogs(); };
   }, [user, view]);
 
-  // --- LÓGICA DE BÚSQUEDA LATINA (ACENTOS Y Ñ) ---
+  // --- BÚSQUEDA SMART CON SOPORTE Ñ/ACENTOS ---
   const filteredProducts = useMemo(() => {
-    const cleanSearch = searchTerm.trim();
-    if (!cleanSearch) return products;
+    const query = searchTerm.trim();
+    if (!query) return products;
     
     const stopWords = ['de', 'para', 'con', 'la', 'el', 'los', 'las', 'y', 'a', 'en', 'por'];
-    
-    // Normalizamos la búsqueda del usuario (ej: "Azeite" -> "azeite", "Muñón" -> "munon")
-    const keywords = normalizeText(cleanSearch)
+    const keywords = normalizeForSearch(query)
       .split(' ')
       .filter(word => word.length > 1 && !stopWords.includes(word));
 
     if (keywords.length === 0) return products;
 
     return products.filter(p => {
-      // Normalizamos todos los campos del producto para la comparación invisible
       const searchableFields = [
         p.name, p.code, p.model, p.category, p.brand, p.carBrand, p.measure, p.year
-      ].map(f => normalizeText(f));
+      ].map(f => normalizeForSearch(f));
       
-      const productFullText = searchableFields.join(' ');
-      const productWords = productFullText.split(/\s+/);
+      const productWords = searchableFields.join(' ').split(/\s+/);
 
       return keywords.every(key => {
-        // 1. Coincidencia directa en texto normalizado
-        if (productFullText.includes(key)) return true;
-
-        // 2. Inteligencia Difusa sobre palabras normalizadas
+        if (searchableFields.some(field => field.includes(key))) return true;
         return productWords.some(pWord => {
           if (pWord.length < 3) return false;
           const distance = getLevenshteinDistance(key, pWord);
@@ -169,6 +181,8 @@ const App = () => {
   };
 
   const handleWhatsApp = () => {
+    const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
+    updateDoc(statsRef, { totalOrdersClicked: increment(1) }).catch(()=>{});
     const phone = "584120000000"; 
     let msg = `🚗 *CONSULTA - AUTOPARTS*\n\n`;
     cart.forEach(i => msg += `• *${i.name}* (Ref: ${i.code}) x${i.qty}\n`);
@@ -177,7 +191,7 @@ const App = () => {
   };
 
   return (
-    <div className="min-h-screen bg-white text-slate-950 font-sans selection:bg-red-100 overflow-x-hidden">
+    <div className="min-h-screen bg-white text-slate-950 font-sans selection:bg-red-100 overflow-x-hidden antialiased">
       {statusMsg.text && (
         <div className={`fixed top-0 left-0 right-0 z-[200] p-4 text-center font-bold text-white shadow-xl ${statusMsg.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'}`}>
           <div className="flex items-center justify-center gap-3">
@@ -198,7 +212,7 @@ const App = () => {
         </button>
       </header>
 
-      <main className="overflow-x-hidden">
+      <main>
         {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => { trackSearch(searchTerm); window.location.hash = '#/catalog'; }} />}
         {view === 'catalog' && <CatalogView products={filteredProducts} onAdd={addToCart} onBack={() => { setSearchTerm(''); window.location.hash = ''; }} />}
         {view === 'admin-login' && <AdminLogin onLogin={(u, p) => { if (u === 'admin' && p === 'AutoPrecision2024*') { setIsAdminAuthenticated(true); return true; } return false; }} setStatus={setStatusMsg} />}
@@ -215,6 +229,8 @@ const App = () => {
   );
 };
 
+// --- COMPONENTES DE VISTA ---
+
 const LandingView = ({ searchTerm, setSearchTerm, onSearch }) => {
   const categories = ["Frenos", "Aceite", "Motor", "Suspensión", "Filtros"];
   return (
@@ -222,7 +238,7 @@ const LandingView = ({ searchTerm, setSearchTerm, onSearch }) => {
       <div className="bg-yellow-400 text-slate-950 px-5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.25em] mb-12 shadow-xl shadow-yellow-100 flex items-center gap-2">
         <Zap size={14} fill="currentColor" /> El repuesto que necesitas hoy
       </div>
-      <h2 className="text-5xl md:text-9xl font-black tracking-tighter italic mb-10 leading-[0.9] text-slate-950 px-2 uppercase">
+      <h2 className="text-6xl md:text-9xl font-black tracking-tighter italic mb-10 leading-[0.9] text-slate-950 px-2 uppercase">
         Calidad y <br/><span className="text-red-600">Potencia.</span>
       </h2>
       <form onSubmit={(e) => { e.preventDefault(); onSearch(); }} className="w-full max-w-2xl bg-slate-50 p-2 rounded-[2rem] shadow-2xl flex items-center border border-slate-100 mb-8 transition-all group">
@@ -343,19 +359,23 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
             const key = Object.keys(row).find(k => names.includes(k.toLowerCase().trim()));
             return key ? row[key] : null;
           };
-          const code = String(findKey(['code', 'codigo', 'cod', 'ref']) || '').trim();
-          const name = String(findKey(['name', 'nombre', 'descripcion']) || '').trim();
+          
+          // APLICAR REPARACIÓN DE CODIFICACIÓN EN LA IMPORTACIÓN
+          const code = repairEncoding(String(findKey(['code', 'codigo', 'cod', 'ref']) || '')).trim();
+          const name = repairEncoding(String(findKey(['name', 'nombre', 'descripcion']) || '')).trim();
           const priceRaw = String(findKey(['price', 'precio', 'costo']) || '0').replace(',', '.');
           
           if (code && name) {
             const ref = doc(db, 'artifacts', appId, 'public', 'data', 'products', code);
             batch.set(ref, { 
-              code, name, brand: findKey(['brand', 'marca', 'fabricante']) || '',
-              measure: findKey(['measure', 'medida', 'medidas', 'peso', 'litros']) || '',
-              carBrand: findKey(['carbrand', 'marcacarro', 'vehiculo', 'marca_auto']) || '',
-              model: findKey(['model', 'modelo']) || '',
-              year: findKey(['year', 'año', 'fecha']) || '',
-              category: findKey(['category', 'categoria', 'tipo']) || 'Varios', 
+              code, 
+              name, 
+              brand: repairEncoding(findKey(['brand', 'marca', 'fabricante']) || ''),
+              measure: repairEncoding(findKey(['measure', 'medida', 'medidas', 'peso', 'litros']) || ''),
+              carBrand: repairEncoding(findKey(['carbrand', 'marcacarro', 'vehiculo', 'marca_auto']) || ''),
+              model: repairEncoding(findKey(['model', 'modelo']) || ''),
+              year: repairEncoding(findKey(['year', 'año', 'fecha']) || ''),
+              category: repairEncoding(findKey(['category', 'categoria', 'tipo']) || 'Varios'), 
               price: parseFloat(priceRaw) || 0, updatedAt: serverTimestamp() 
             }, { merge: true });
             count++;
@@ -380,7 +400,7 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
             <>
               <UploadCloud size={64} className="text-red-600 mb-6" />
               <h3 className="font-black uppercase italic mb-2 text-xl text-slate-950">Importar Inventario</h3>
-              <p className="text-slate-400 text-sm mb-10 max-w-xs">Usa columnas: code, name, brand, measure, carBrand, model, year, price</p>
+              <p className="text-slate-400 text-sm mb-10 max-w-xs">UTF-8 Automático para Ñ y Acentos.</p>
               <label className={`px-10 py-5 rounded-2xl font-black cursor-pointer text-xs tracking-widest uppercase transition-all shadow-xl ${!user ? 'bg-slate-200 cursor-not-allowed text-slate-400' : 'bg-slate-950 text-white hover:bg-red-600'}`}>
                 Seleccionar Archivo<input type="file" className="hidden" accept=".xlsx, .csv" onChange={handleImport} disabled={!user} />
               </label>
@@ -437,8 +457,8 @@ const AdminLogin = ({ onLogin, setStatus }) => {
         <Lock className="mx-auto mb-10 text-red-600" size={56} strokeWidth={3} />
         <h2 className="text-3xl font-black uppercase mb-12 italic tracking-tighter">Acceso <span className="text-red-600">Restringido</span></h2>
         <form onSubmit={(e) => { e.preventDefault(); if (!onLogin(u,p)) setStatus({text:'Credenciales inválidas', type:'error'}); }} className="space-y-6 text-left">
-          <input type="text" placeholder="Usuario" className="w-full bg-slate-50 p-7 rounded-[2rem] outline-none border-2 border-transparent focus:border-red-600 transition-all font-bold text-xl placeholder:text-slate-200" value={u} onChange={(e) => setU(e.target.value)} />
-          <input type="password" placeholder="Contraseña" className="w-full bg-slate-50 p-7 rounded-[2rem] outline-none border-2 border-transparent focus:border-red-600 transition-all font-bold text-xl placeholder:text-slate-200" value={p} onChange={(e) => setP(e.target.value)} />
+          <input type="text" placeholder="Usuario" className="w-full bg-slate-50 p-7 rounded-[2rem] outline-none border-2 border-transparent focus:border-red-600 transition-all font-bold text-xl placeholder:text-slate-200 text-slate-950" value={u} onChange={(e) => setU(e.target.value)} />
+          <input type="password" placeholder="Contraseña" className="w-full bg-slate-50 p-7 rounded-[2rem] outline-none border-2 border-transparent focus:border-red-600 transition-all font-bold text-xl placeholder:text-slate-200 text-slate-950" value={p} onChange={(e) => setP(e.target.value)} />
           <button type="submit" className="w-full bg-slate-950 text-white py-8 rounded-[2.5rem] font-black text-2xl mt-6 hover:bg-red-600 transition-all shadow-xl active:scale-95">INGRESAR</button>
         </form>
       </div>
