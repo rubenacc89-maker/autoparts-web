@@ -155,7 +155,7 @@ const App = () => {
   const handleWhatsApp = () => {
     const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
     updateDoc(statsRef, { totalOrdersClicked: increment(1) }).catch(()=>{});
-    const phone = "584120000000"; 
+    const phone = "584249067302"; 
     let msg = `🚗 *CONSULTA - AUTOPARTS*\n\n`;
     cart.forEach(i => msg += `• *${i.name}* (Ref: ${i.code}) x${i.qty}\n`);
     msg += `\n💰 *Total Estimado: $${cart.reduce((a,b)=>a+(b.price*b.qty),0).toFixed(2)} USD*`;
