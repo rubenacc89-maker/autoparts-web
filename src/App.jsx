@@ -66,8 +66,18 @@ const App = () => {
   }, [isAdminAuthenticated]);
 
   useEffect(() => {
-    signInAnonymously(auth).catch(() => setStatusMsg({ text: 'Error de conexión', type: 'error' }));
-    onAuthStateChanged(auth, setUser);
+    const startAuth = async () => {
+      try {
+        await signInAnonymously(auth);
+      } catch (err) {
+        setStatusMsg({ text: 'Error: Debes activar "Anonymous Auth" en la consola de Firebase', type: 'error' });
+      }
+    };
+    startAuth();
+    onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) console.log("🔥 Firebase Auth: Conectado como", u.uid);
+    });
   }, []);
 
   useEffect(() => {
@@ -106,10 +116,10 @@ const App = () => {
   const handleWhatsApp = () => {
     const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
     updateDoc(statsRef, { totalOrdersClicked: increment(1) }).catch(()=>{});
-    const phone = "584249067302"; 
+    const phone = "584120000000"; 
     let msg = `🚗 *CONSULTA - AUTOPARTS*\n\n`;
     cart.forEach(i => msg += `• *${i.name}* (Ref: ${i.code}) x${i.qty}\n`);
-    msg += `\n💰 *Total: $${cart.reduce((a,b)=>a+(b.price*b.qty),0).toFixed(2)} USD*`;
+    msg += `\n💰 *Total Estimado: $${cart.reduce((a,b)=>a+(b.price*b.qty),0).toFixed(2)} USD*`;
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
   };
 
@@ -139,7 +149,7 @@ const App = () => {
         {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => { trackSearch(searchTerm); window.location.hash = '#/catalog'; }} />}
         {view === 'catalog' && <CatalogView products={products.filter(p => `${p.name} ${p.code} ${p.model} ${p.category} ${p.brand} ${p.carBrand}`.toLowerCase().includes(searchTerm.toLowerCase()))} onAdd={addToCart} onBack={() => { setSearchTerm(''); window.location.hash = ''; }} />}
         {view === 'admin-login' && <AdminLogin onLogin={(u, p) => { if (u === 'admin' && p === 'AutoPrecision2024*') { setIsAdminAuthenticated(true); return true; } return false; }} setStatus={setStatusMsg} />}
-        {view === 'admin-dashboard' && <AdminDashboard products={products} stats={stats} logs={searchLogs} onLogout={() => { setIsAdminAuthenticated(false); window.location.hash = ''; }} setStatus={setStatusMsg} isReady={isXLSXLoaded} />}
+        {view === 'admin-dashboard' && <AdminDashboard products={products} stats={stats} logs={searchLogs} onLogout={() => { setIsAdminAuthenticated(false); window.location.hash = ''; }} setStatus={setStatusMsg} isReady={isXLSXLoaded} user={user} />}
         {view === 'cart' && <CartView cart={cart} setCart={setCart} onConfirm={handleWhatsApp} />}
       </main>
 
@@ -161,8 +171,8 @@ const LandingView = ({ searchTerm, setSearchTerm, onSearch }) => {
       <div className="bg-yellow-400 text-slate-950 px-5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.25em] mb-12 shadow-xl shadow-yellow-100 flex items-center gap-2">
         <Zap size={14} fill="currentColor" /> El repuesto que necesitas hoy
       </div>
-      <h2 className="text-5xl md:text-9xl font-black tracking-tighter italic mb-10 leading-[0.9] text-slate-950 px-2">
-        CALIDAD Y <br/><span className="text-red-600">POTENCIA.</span>
+      <h2 className="text-5xl md:text-9xl font-black tracking-tighter italic mb-10 leading-[0.9] text-slate-950 px-2 uppercase">
+        Calidad y <br/><span className="text-red-600">Potencia.</span>
       </h2>
       <form onSubmit={(e) => { e.preventDefault(); onSearch(); }} className="w-full max-w-2xl bg-slate-50 p-2 rounded-[2rem] shadow-2xl flex items-center border border-slate-100 mb-8 transition-all group">
         <Search className="ml-4 text-slate-300" size={24} />
@@ -193,8 +203,6 @@ const CatalogView = ({ products, onAdd, onBack }) => (
         <div key={p.id} className="bg-white p-6 md:p-12 rounded-[2.5rem] md:rounded-[4rem] border border-slate-100 flex flex-col md:flex-row items-center justify-between gap-6 hover:border-red-600 transition-all shadow-sm group relative overflow-hidden">
           <div className="w-full">
             <h4 className="text-2xl md:text-4xl font-black italic tracking-tight group-hover:text-red-600 transition-colors mb-5 leading-tight text-slate-950 uppercase">{p.name}</h4>
-            
-            {/* TAGS AMARILLOS RESALTADOS */}
             <div className="flex flex-wrap gap-2 md:gap-3">
               {p.brand && <span className="text-[10px] font-black bg-yellow-400 text-slate-950 px-4 py-1.5 rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.brand}</span>}
               {p.measure && <span className="text-[10px] font-black bg-yellow-400 text-slate-950 px-4 py-1.5 rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.measure}</span>}
@@ -204,7 +212,6 @@ const CatalogView = ({ products, onAdd, onBack }) => (
               <span className="text-[10px] font-mono font-bold text-slate-300 py-1.5 ml-1">REF: {p.code}</span>
             </div>
           </div>
-          
           <div className="w-full flex items-center justify-between md:justify-end gap-6 md:gap-14 border-t md:border-t-0 pt-6 md:pt-0">
             <div className="flex flex-col items-start md:items-end">
                <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-1">Precio Final</span>
@@ -212,8 +219,6 @@ const CatalogView = ({ products, onAdd, onBack }) => (
             </div>
             <button onClick={() => onAdd(p)} className="bg-red-600 text-white p-6 md:p-8 rounded-full hover:bg-slate-950 transition-all shadow-xl active:scale-90"><Plus size={36} strokeWidth={4}/></button>
           </div>
-          
-          {/* Acento decorativo Ferrari */}
           <div className="absolute top-0 right-0 w-24 h-24 bg-slate-50/50 rounded-bl-full -mr-12 -mt-12 group-hover:bg-red-50 transition-colors -z-10"></div>
         </div>
       ))}
@@ -225,7 +230,7 @@ const CartView = ({ cart, setCart, onConfirm }) => {
   const total = cart.reduce((a,b)=>a+(b.price*b.qty), 0);
   return (
     <div className="p-4 md:p-10 max-w-4xl mx-auto py-12 md:py-24 text-left">
-      <h2 className="text-5xl md:text-9xl font-black italic mb-16 tracking-tighter leading-none px-2 text-slate-900">Tu <span className="text-red-600 underline decoration-yellow-400 decoration-4 md:decoration-8 underline-offset-4 md:underline-offset-8">Cesta</span></h2>
+      <h2 className="text-5xl md:text-9xl font-black italic mb-16 tracking-tighter leading-none px-2 text-slate-900 uppercase">Tu <span className="text-red-600 underline decoration-yellow-400 decoration-4 md:decoration-8 underline-offset-4 md:underline-offset-8 italic">Cesta</span></h2>
       {cart.length === 0 ? (
         <div className="bg-white border-4 border-dashed border-slate-100 rounded-[3rem] p-16 text-center">
           <p className="text-slate-300 font-black italic text-4xl uppercase mb-10 tracking-widest">Vacío</p>
@@ -237,7 +242,7 @@ const CartView = ({ cart, setCart, onConfirm }) => {
             <div key={item.id} className="bg-white p-8 rounded-[2.5rem] md:rounded-[3.5rem] border border-slate-100 shadow-xl group hover:border-red-600 transition-all relative">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div className="flex-1">
-                  <h4 className="font-black text-2xl md:text-3xl italic tracking-tight mb-4 pr-16 text-slate-950 leading-none">{item.name}</h4>
+                  <h4 className="font-black text-2xl md:text-3xl italic tracking-tight mb-4 pr-16 text-slate-950 leading-none uppercase">{item.name}</h4>
                   <div className="flex items-center gap-8">
                     <p className="text-red-600 font-black text-3xl md:text-4xl italic leading-none">${item.price.toFixed(2)}</p>
                     <div className="flex items-center bg-slate-950 text-white rounded-2xl px-6 py-3 gap-6 shadow-lg">
@@ -253,7 +258,7 @@ const CartView = ({ cart, setCart, onConfirm }) => {
           ))}
           <div className="bg-slate-950 p-10 md:p-20 rounded-[3.5rem] md:rounded-[5rem] text-center text-white mt-12 shadow-3xl relative overflow-hidden group">
             <div className="relative z-10">
-              <p className="text-slate-500 uppercase font-black text-xs tracking-widest mb-6">Monto Total Estimado</p>
+              <p className="text-slate-600 uppercase font-black text-xs tracking-widest mb-6">Monto Total Estimado</p>
               <h3 className="text-6xl md:text-[11rem] font-black italic mb-14 tracking-tighter leading-none">${total.toFixed(2)}</h3>
               <button onClick={onConfirm} className="w-full bg-red-600 py-8 md:py-12 rounded-[2.5rem] md:rounded-[3.5rem] font-black text-2xl md:text-5xl flex items-center justify-center gap-6 hover:bg-red-500 transition-all shadow-2xl active:scale-95 shadow-red-900/40">PEDIR POR WHATSAPP <ExternalLink size={32} strokeWidth={4}/></button>
             </div>
@@ -264,14 +269,14 @@ const CartView = ({ cart, setCart, onConfirm }) => {
   );
 };
 
-const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady }) => {
+const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, user }) => {
   const [loading, setLoading] = useState(false);
   const handleDelete = async (id) => {
     if (!window.confirm("¿Confirmas eliminar este producto?")) return;
-    try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', id)); setStatus({ text: 'Eliminado', type: 'success' }); } catch (e) {}
+    try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'products', id)); setStatus({ text: 'Eliminado', type: 'success' }); } catch (e) { setStatus({text: 'Error al borrar', type:'error'}); }
   };
   const handleImport = async (e) => {
-    const file = e.target.files[0]; if (!file || !isReady) return;
+    const file = e.target.files[0]; if (!file || !isReady || !user) return;
     setLoading(true);
     const reader = new FileReader();
     reader.onload = async (evt) => {
@@ -294,22 +299,19 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady })
           if (code && name) {
             const ref = doc(db, 'artifacts', appId, 'public', 'data', 'products', code);
             batch.set(ref, { 
-              code, 
-              name, 
-              brand: findKey(['brand', 'marca', 'fabricante']) || '',
+              code, name, brand: findKey(['brand', 'marca', 'fabricante']) || '',
               measure: findKey(['measure', 'medida', 'medidas', 'peso', 'litros']) || '',
               carBrand: findKey(['carbrand', 'marcacarro', 'vehiculo', 'marca_auto']) || '',
               model: findKey(['model', 'modelo']) || '',
               year: findKey(['year', 'año', 'fecha']) || '',
               category: findKey(['category', 'categoria', 'tipo']) || 'Varios', 
-              price: parseFloat(priceRaw) || 0, 
-              updatedAt: serverTimestamp() 
+              price: parseFloat(priceRaw) || 0, updatedAt: serverTimestamp() 
             }, { merge: true });
             count++;
           }
         });
         await batch.commit(); setStatus({ text: `¡Éxito! ${count} productos sincronizados.`, type: 'success' });
-      } catch (err) { setStatus({ text: `Error: ${err.message}`, type: 'error' }); } finally { setLoading(false); }
+      } catch (err) { setStatus({ text: `Error de Permisos: Revisa la consola de Firebase`, type: 'error' }); } finally { setLoading(false); }
     };
     reader.readAsBinaryString(file);
   };
@@ -323,19 +325,20 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady })
       
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10">
         <div className="bg-white p-10 rounded-[3.5rem] border-4 border-dashed border-slate-100 text-center flex flex-col justify-center items-center group hover:border-red-600/30 transition-colors">
+          {!user && <div className="text-red-500 font-bold mb-4 flex items-center gap-2"><AlertCircle size={16}/> ERROR DE CONEXIÓN CON GOOGLE</div>}
           {loading ? <Loader2 className="animate-spin text-red-600" size={48} /> : (
             <>
               <UploadCloud size={64} className="text-red-600 mb-6" />
-              <h3 className="font-black uppercase italic mb-2 text-xl">Importar Inventario</h3>
-              <p className="text-slate-400 text-sm mb-10 max-w-xs">Columnas: code, name, brand, measure, carBrand, model, year, price</p>
-              <label className="bg-slate-950 text-white px-10 py-5 rounded-2xl font-black cursor-pointer text-xs tracking-widest uppercase hover:bg-red-600 transition-all shadow-xl">
-                Seleccionar Archivo<input type="file" className="hidden" accept=".xlsx, .csv" onChange={handleImport} />
+              <h3 className="font-black uppercase italic mb-2 text-xl text-slate-950">Importar Inventario</h3>
+              <p className="text-slate-400 text-sm mb-10 max-w-xs">Asegúrate de haber publicado las reglas en Firestore.</p>
+              <label className={`px-10 py-5 rounded-2xl font-black cursor-pointer text-xs tracking-widest uppercase transition-all shadow-xl ${!user ? 'bg-slate-200 cursor-not-allowed text-slate-400' : 'bg-slate-950 text-white hover:bg-red-600'}`}>
+                Seleccionar Archivo<input type="file" className="hidden" accept=".xlsx, .csv" onChange={handleImport} disabled={!user} />
               </label>
             </>
           )}
         </div>
         <div className="bg-white p-10 rounded-[3.5rem] border-2 border-slate-50 shadow-sm overflow-hidden flex flex-col">
-          <div className="flex items-center gap-3 mb-8"><Eye className="text-red-600" size={28}/><h3 className="font-black uppercase text-lg italic">Radar de Clientes</h3></div>
+          <div className="flex items-center gap-3 mb-8"><Eye className="text-red-600" size={28}/><h3 className="font-black uppercase text-lg italic text-slate-950">Radar de Clientes</h3></div>
           <div className="space-y-3 max-h-[250px] overflow-y-auto no-scrollbar flex-1">
             {logs.length === 0 ? <p className="text-slate-200 text-center py-10 italic">Sin actividad reciente</p> : logs.map(log => (
               <div key={log.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-red-600/20 transition-all">
@@ -348,7 +351,7 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady })
       </div>
       
       <div className="bg-white p-8 md:p-12 rounded-[4rem] border border-slate-100 shadow-3xl overflow-hidden">
-        <h3 className="font-black uppercase italic mb-8 text-2xl tracking-tighter">Limpieza de Stock ({products.length})</h3>
+        <h3 className="font-black uppercase italic mb-8 text-2xl tracking-tighter text-slate-950">Limpieza de Stock ({products.length})</h3>
         <div className="max-h-[600px] overflow-y-auto no-scrollbar">
           <table className="w-full text-left">
             <thead>
@@ -362,7 +365,7 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady })
               {products.map(p => (
                 <tr key={p.id} className="group hover:bg-slate-50 transition-colors">
                   <td className="py-6 px-2">
-                    <p className="font-bold text-base text-slate-900 group-hover:text-red-600 transition-colors leading-tight mb-1">{p.name}</p>
+                    <p className="font-bold text-base text-slate-900 group-hover:text-red-600 transition-colors leading-tight mb-1 uppercase">{p.name}</p>
                     <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">{p.brand} {p.carBrand} {p.model} {p.year}</p>
                   </td>
                   <td className="py-6 font-black text-right text-xl italic text-slate-950">${(p.price||0).toFixed(2)}</td>
