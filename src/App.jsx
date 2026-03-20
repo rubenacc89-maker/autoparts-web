@@ -66,18 +66,8 @@ const App = () => {
   }, [isAdminAuthenticated]);
 
   useEffect(() => {
-    const startAuth = async () => {
-      try {
-        await signInAnonymously(auth);
-      } catch (err) {
-        setStatusMsg({ text: 'Error: Debes activar "Anonymous Auth" en la consola de Firebase', type: 'error' });
-      }
-    };
-    startAuth();
-    onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (u) console.log("🔥 Firebase Auth: Conectado como", u.uid);
-    });
+    signInAnonymously(auth).catch(() => setStatusMsg({ text: 'Error de conexión', type: 'error' }));
+    onAuthStateChanged(auth, setUser);
   }, []);
 
   useEffect(() => {
@@ -97,6 +87,39 @@ const App = () => {
     });
     return () => { unsubProds(); unsubStats(); unsubLogs(); };
   }, [user, view]);
+
+  // --- LÓGICA DE BÚSQUEDA ROBUSTA (Smart Search) ---
+  const filteredProducts = useMemo(() => {
+    if (!searchTerm.trim()) return products;
+    
+    // Palabras a ignorar (conectores comunes en español)
+    const stopWords = ['de', 'para', 'con', 'la', 'el', 'los', 'las', 'y', 'a', 'en', 'por'];
+    
+    // Limpiamos y separamos la búsqueda en palabras clave (tokens)
+    const keywords = searchTerm.toLowerCase()
+      .split(' ')
+      .filter(word => word.length > 1 && !stopWords.includes(word));
+
+    if (keywords.length === 0) return products;
+
+    return products.filter(p => {
+      // Combinamos todos los campos buscables en un solo texto plano
+      const productText = `
+        ${p.name || ''} 
+        ${p.code || ''} 
+        ${p.model || ''} 
+        ${p.category || ''} 
+        ${p.brand || ''} 
+        ${p.carBrand || ''} 
+        ${p.measure || ''} 
+        ${p.year || ''}
+      `.toLowerCase();
+      
+      // Verificamos que CADA palabra clave de la búsqueda esté presente en alguna parte del producto
+      // Esto permite que "Filtro de Aceite" coincida con "Filtro Aceite" porque ignora el "de"
+      return keywords.every(key => productText.includes(key));
+    });
+  }, [products, searchTerm]);
 
   const trackSearch = async (term) => {
     if (!term.trim() || !user) return;
@@ -146,8 +169,20 @@ const App = () => {
       </header>
 
       <main className="overflow-x-hidden">
-        {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => { trackSearch(searchTerm); window.location.hash = '#/catalog'; }} />}
-        {view === 'catalog' && <CatalogView products={products.filter(p => `${p.name} ${p.code} ${p.model} ${p.category} ${p.brand} ${p.carBrand}`.toLowerCase().includes(searchTerm.toLowerCase()))} onAdd={addToCart} onBack={() => { setSearchTerm(''); window.location.hash = ''; }} />}
+        {view === 'landing' && (
+          <LandingView 
+            searchTerm={searchTerm} 
+            setSearchTerm={setSearchTerm} 
+            onSearch={() => { trackSearch(searchTerm); window.location.hash = '#/catalog'; }} 
+          />
+        )}
+        {view === 'catalog' && (
+          <CatalogView 
+            products={filteredProducts} 
+            onAdd={addToCart} 
+            onBack={() => { setSearchTerm(''); window.location.hash = ''; }} 
+          />
+        )}
         {view === 'admin-login' && <AdminLogin onLogin={(u, p) => { if (u === 'admin' && p === 'AutoPrecision2024*') { setIsAdminAuthenticated(true); return true; } return false; }} setStatus={setStatusMsg} />}
         {view === 'admin-dashboard' && <AdminDashboard products={products} stats={stats} logs={searchLogs} onLogout={() => { setIsAdminAuthenticated(false); window.location.hash = ''; }} setStatus={setStatusMsg} isReady={isXLSXLoaded} user={user} />}
         {view === 'cart' && <CartView cart={cart} setCart={setCart} onConfirm={handleWhatsApp} />}
@@ -162,8 +197,6 @@ const App = () => {
   );
 };
 
-// --- COMPONENTES DE VISTA ---
-
 const LandingView = ({ searchTerm, setSearchTerm, onSearch }) => {
   const categories = ["Frenos", "Aceite", "Motor", "Suspensión", "Filtros"];
   return (
@@ -176,7 +209,7 @@ const LandingView = ({ searchTerm, setSearchTerm, onSearch }) => {
       </h2>
       <form onSubmit={(e) => { e.preventDefault(); onSearch(); }} className="w-full max-w-2xl bg-slate-50 p-2 rounded-[2rem] shadow-2xl flex items-center border border-slate-100 mb-8 transition-all group">
         <Search className="ml-4 text-slate-300" size={24} />
-        <input type="text" placeholder="¿Qué buscas hoy?" className="w-full p-4 bg-transparent outline-none font-bold text-lg md:text-2xl placeholder:text-slate-200" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+        <input type="text" placeholder="Busca por pieza, marca o carro..." className="w-full p-4 bg-transparent outline-none font-bold text-lg md:text-2xl placeholder:text-slate-200" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
         <button type="submit" className="bg-red-600 text-white p-4 rounded-[1.5rem] hover:bg-red-700 active:scale-95"><ArrowRight size={24}/></button>
       </form>
       <div className="flex flex-wrap justify-center gap-2">
@@ -322,7 +355,6 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
         <h2 className="text-2xl md:text-5xl font-black italic uppercase italic tracking-tighter">Panel de <span className="text-red-600">Control</span></h2>
         <button onClick={onLogout} className="bg-red-600 p-4 rounded-xl hover:bg-white hover:text-red-600 transition-all shadow-lg active:scale-90"><LogOut size={24} /></button>
       </div>
-      
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10">
         <div className="bg-white p-10 rounded-[3.5rem] border-4 border-dashed border-slate-100 text-center flex flex-col justify-center items-center group hover:border-red-600/30 transition-colors">
           {!user && <div className="text-red-500 font-bold mb-4 flex items-center gap-2"><AlertCircle size={16}/> ERROR DE CONEXIÓN CON GOOGLE</div>}
@@ -330,7 +362,7 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
             <>
               <UploadCloud size={64} className="text-red-600 mb-6" />
               <h3 className="font-black uppercase italic mb-2 text-xl text-slate-950">Importar Inventario</h3>
-              <p className="text-slate-400 text-sm mb-10 max-w-xs">Asegúrate de haber publicado las reglas en Firestore.</p>
+              <p className="text-slate-400 text-sm mb-10 max-w-xs">Usa columnas: code, name, brand, measure, carBrand, model, year, price</p>
               <label className={`px-10 py-5 rounded-2xl font-black cursor-pointer text-xs tracking-widest uppercase transition-all shadow-xl ${!user ? 'bg-slate-200 cursor-not-allowed text-slate-400' : 'bg-slate-950 text-white hover:bg-red-600'}`}>
                 Seleccionar Archivo<input type="file" className="hidden" accept=".xlsx, .csv" onChange={handleImport} disabled={!user} />
               </label>
@@ -349,7 +381,6 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
           </div>
         </div>
       </div>
-      
       <div className="bg-white p-8 md:p-12 rounded-[4rem] border border-slate-100 shadow-3xl overflow-hidden">
         <h3 className="font-black uppercase italic mb-8 text-2xl tracking-tighter text-slate-950">Limpieza de Stock ({products.length})</h3>
         <div className="max-h-[600px] overflow-y-auto no-scrollbar">
