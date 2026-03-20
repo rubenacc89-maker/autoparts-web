@@ -29,8 +29,19 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = "autoparts-b4a5c";
 
-// --- FUNCIÓN DE INTELIGENCIA DIFUSA (Fuzzy Logic) ---
-// Calcula qué tan parecidas son dos palabras permitiendo errores tipográficos
+// --- UTILIDADES DE INTELIGENCIA LINGÜÍSTICA ---
+
+// 1. Normalización: Elimina acentos y convierte Ñ en N para comparaciones "ciegas"
+const normalizeText = (text) => {
+  if (!text) return "";
+  return String(text)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // Elimina acentos y tildes (incluida la de la ñ para búsqueda)
+    .toLowerCase()
+    .trim();
+};
+
+// 2. Distancia de Levenshtein: Permite errores tipográficos
 const getLevenshteinDistance = (a, b) => {
   const matrix = Array.from({ length: a.length + 1 }, () => 
     Array.from({ length: b.length + 1 }, (_, i) => i)
@@ -104,32 +115,37 @@ const App = () => {
     return () => { unsubProds(); unsubStats(); unsubLogs(); };
   }, [user, view]);
 
-  // --- LÓGICA DE BÚSQUEDA ULTRA-ROBUSTA ---
+  // --- LÓGICA DE BÚSQUEDA LATINA (ACENTOS Y Ñ) ---
   const filteredProducts = useMemo(() => {
-    if (!searchTerm.trim()) return products;
+    const cleanSearch = searchTerm.trim();
+    if (!cleanSearch) return products;
     
     const stopWords = ['de', 'para', 'con', 'la', 'el', 'los', 'las', 'y', 'a', 'en', 'por'];
-    const keywords = searchTerm.toLowerCase().split(' ').filter(word => word.length > 1 && !stopWords.includes(word));
+    
+    // Normalizamos la búsqueda del usuario (ej: "Azeite" -> "azeite", "Muñón" -> "munon")
+    const keywords = normalizeText(cleanSearch)
+      .split(' ')
+      .filter(word => word.length > 1 && !stopWords.includes(word));
 
     if (keywords.length === 0) return products;
 
     return products.filter(p => {
+      // Normalizamos todos los campos del producto para la comparación invisible
       const searchableFields = [
         p.name, p.code, p.model, p.category, p.brand, p.carBrand, p.measure, p.year
-      ].map(f => String(f || '').toLowerCase());
+      ].map(f => normalizeText(f));
       
-      const productWords = searchableFields.join(' ').split(/\s+/);
+      const productFullText = searchableFields.join(' ');
+      const productWords = productFullText.split(/\s+/);
 
-      // Verificamos cada palabra que el usuario escribió
       return keywords.every(key => {
-        // 1. Coincidencia exacta o parcial directa
-        if (searchableFields.some(field => field.includes(key))) return true;
+        // 1. Coincidencia directa en texto normalizado
+        if (productFullText.includes(key)) return true;
 
-        // 2. Inteligencia Difusa: Revisar si la palabra se parece a alguna palabra del producto
+        // 2. Inteligencia Difusa sobre palabras normalizadas
         return productWords.some(pWord => {
           if (pWord.length < 3) return false;
           const distance = getLevenshteinDistance(key, pWord);
-          // Tolerancia: 1 error para palabras cortas, 2 para largas
           const tolerance = key.length > 6 ? 2 : 1;
           return distance <= tolerance;
         });
@@ -153,9 +169,7 @@ const App = () => {
   };
 
   const handleWhatsApp = () => {
-    const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
-    updateDoc(statsRef, { totalOrdersClicked: increment(1) }).catch(()=>{});
-    const phone = "584249067302"; 
+    const phone = "584120000000"; 
     let msg = `🚗 *CONSULTA - AUTOPARTS*\n\n`;
     cart.forEach(i => msg += `• *${i.name}* (Ref: ${i.code}) x${i.qty}\n`);
     msg += `\n💰 *Total Estimado: $${cart.reduce((a,b)=>a+(b.price*b.qty),0).toFixed(2)} USD*`;
@@ -208,12 +222,12 @@ const LandingView = ({ searchTerm, setSearchTerm, onSearch }) => {
       <div className="bg-yellow-400 text-slate-950 px-5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.25em] mb-12 shadow-xl shadow-yellow-100 flex items-center gap-2">
         <Zap size={14} fill="currentColor" /> El repuesto que necesitas hoy
       </div>
-      <h2 className="text-6xl md:text-9xl font-black tracking-tighter italic mb-10 leading-[0.9] text-slate-950 px-2 uppercase">
+      <h2 className="text-5xl md:text-9xl font-black tracking-tighter italic mb-10 leading-[0.9] text-slate-950 px-2 uppercase">
         Calidad y <br/><span className="text-red-600">Potencia.</span>
       </h2>
       <form onSubmit={(e) => { e.preventDefault(); onSearch(); }} className="w-full max-w-2xl bg-slate-50 p-2 rounded-[2rem] shadow-2xl flex items-center border border-slate-100 mb-8 transition-all group">
         <Search className="ml-4 text-slate-300" size={24} />
-        <input type="text" placeholder="¿Qué buscas hoy?" className="w-full p-4 bg-transparent outline-none font-bold text-lg md:text-2xl placeholder:text-slate-200" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+        <input type="text" placeholder="Busca por pieza, marca o carro..." className="w-full p-4 bg-transparent outline-none font-bold text-lg md:text-2xl placeholder:text-slate-200" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
         <button type="submit" className="bg-red-600 text-white p-4 rounded-[1.5rem] hover:bg-red-700 active:scale-95"><ArrowRight size={24}/></button>
       </form>
       <div className="flex flex-wrap justify-center gap-2">
@@ -356,7 +370,7 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
   return (
     <div className="p-4 md:p-12 max-w-7xl mx-auto text-left animate-in fade-in duration-700 pb-40">
       <div className="flex justify-between items-center mb-10 bg-slate-950 p-8 rounded-[2.5rem] text-white shadow-2xl border-b-8 border-red-600">
-        <h2 className="text-2xl md:text-5xl font-black italic uppercase tracking-tighter leading-none">Panel de <span className="text-red-600">Control</span></h2>
+        <h2 className="text-2xl md:text-5xl font-black italic uppercase italic tracking-tighter leading-none">Panel de <span className="text-red-600">Control</span></h2>
         <button onClick={onLogout} className="bg-red-600 p-4 rounded-xl hover:bg-white hover:text-red-600 transition-all shadow-lg active:scale-90"><LogOut size={24} /></button>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10">
