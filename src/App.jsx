@@ -31,25 +31,20 @@ const appId = "autoparts-b4a5c";
 
 // --- UTILIDADES DE INTELIGENCIA LINGÜÍSTICA ---
 
-// Repara caracteres latinos (Ñ, acentos) que se rompen en importaciones CSV/Excel
 const repairEncoding = (str) => {
   if (!str) return "";
   let clean = String(str);
-  
   const fixes = [
     ['Ã±', 'ñ'], ['Ã‘', 'Ñ'], ['Ã¡', 'á'], ['Ã©', 'é'], ['Ã­', 'í'], ['Ã³', 'ó'], ['Ãº', 'ú'],
     ['Ã\u0081', 'Á'], ['Ã\u0089', 'É'], ['Ã\u008d', 'Í'], ['Ã\u0093', 'Ó'], ['Ã\u009a', 'Ú'],
     ['Ã ', 'Á'], ['Ã ', 'Í']
   ];
-
   fixes.forEach(([key, value]) => {
     clean = clean.split(key).join(value);
   });
-  
   return clean;
 };
 
-// Normaliza texto para búsqueda: elimina acentos y trata Ñ como N para comparar
 const normalizeForSearch = (text) => {
   if (!text) return "";
   return String(text)
@@ -88,11 +83,9 @@ const App = () => {
   const [isXLSXLoaded, setIsXLSXLoaded] = useState(false);
   const [isLoadingInitialData, setIsLoadingInitialData] = useState(true);
 
-  // 1. CARGA DE DATOS ÚNICA
   useEffect(() => {
     document.documentElement.lang = "es";
     signInAnonymously(auth).catch(() => setStatusMsg({ text: 'Error de conexión a Google Cloud', type: 'error' }));
-    
     const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
       setUser(u);
       if (u) {
@@ -100,32 +93,24 @@ const App = () => {
           setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
           setIsLoadingInitialData(false);
         });
-
         const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
         const unsubStats = onSnapshot(statsRef, (s) => s.exists() && setStats(s.data()));
-
         const unsubLogs = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'search_logs'), (snap) => {
           setSearchLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)).slice(0, 15));
         });
-
         return () => { unsubProds(); unsubStats(); unsubLogs(); };
       }
     });
-
     if (!window.XLSX) {
       const script = document.createElement('script');
       script.src = "https://cdn.sheetjs.com/xlsx-0.19.3/package/dist/xlsx.full.min.js";
       script.async = true;
       script.onload = () => setIsXLSXLoaded(true);
       document.head.appendChild(script);
-    } else {
-      setIsXLSXLoaded(true);
-    }
-
+    } else { setIsXLSXLoaded(true); }
     return () => unsubscribeAuth();
   }, []);
 
-  // 2. CONTROL DE VISTAS
   useEffect(() => {
     const handleHash = () => {
       const h = window.location.hash;
@@ -139,18 +124,15 @@ const App = () => {
     };
     window.addEventListener('hashchange', handleHash);
     handleHash();
-    
     if (user && window.location.hash === '') {
       const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
       updateDoc(statsRef, { totalVisits: increment(1) }).catch(() => 
         setDoc(statsRef, { totalVisits: 1, totalOrdersClicked: 0 }, { merge: true })
       );
     }
-
     return () => window.removeEventListener('hashchange', handleHash);
   }, [isAdminAuthenticated, user]);
 
-  // 3. CATEGORÍAS DINÁMICAS
   const dynamicCategories = useMemo(() => {
     const cats = products
       .map(p => p.category)
@@ -159,23 +141,16 @@ const App = () => {
     return [...new Set(cats)].sort();
   }, [products]);
 
-  // 4. LÓGICA DE BÚSQUEDA SMART
   const searchedProducts = useMemo(() => {
     const query = searchTerm.trim();
     if (!query) return products;
-    
     const stopWords = ['de', 'para', 'con', 'la', 'el', 'los', 'las', 'y', 'a', 'en', 'por'];
-    const keywords = normalizeForSearch(query)
-      .split(' ')
-      .filter(word => word.length > 1 && !stopWords.includes(word));
-
+    const keywords = normalizeForSearch(query).split(' ').filter(word => word.length > 1 && !stopWords.includes(word));
     if (keywords.length === 0) return products;
-
     return products.filter(p => {
       const fields = [p.name, p.code, p.model, p.category, p.brand, p.carBrand, p.measure, p.year].map(f => normalizeForSearch(f));
       const fullText = fields.join(' ');
       const words = fullText.split(/\s+/);
-
       return keywords.every(key => {
         if (fullText.includes(key)) return true;
         return words.some(w => {
@@ -187,7 +162,6 @@ const App = () => {
     });
   }, [products, searchTerm]);
 
-  // 5. FILTRO DE MODELOS (GARAJE)
   const availableModelsForCurrentSearch = useMemo(() => {
     const modelsSet = new Set();
     searchedProducts.forEach(p => {
@@ -220,7 +194,7 @@ const App = () => {
   };
 
   const handleWhatsApp = () => {
-    const phone = "584249067302"; 
+    const phone = "584249067302"; // NÚMERO ACTUALIZADO
     let msg = `🚗 *NUEVA CONSULTA - AUTOPARTS*\n\n`;
     cart.forEach(i => msg += `• *${i.name}* (Ref: ${i.code}) x${i.qty}\n`);
     msg += `\n💰 *Total Estimado: $${cart.reduce((a,b)=>a+(b.price*b.qty),0).toFixed(2)} USD*`;
@@ -230,12 +204,13 @@ const App = () => {
   return (
     <div className="min-h-screen bg-white text-slate-950 font-sans selection:bg-red-100 overflow-x-hidden antialiased">
       {statusMsg.text && (
-        <div className={`fixed top-0 left-0 right-0 z-[200] p-4 text-center font-bold text-white shadow-xl ${statusMsg.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'}`}>
+        <div className={`fixed top-0 left-0 right-0 z-[100] p-4 text-center font-bold text-white shadow-xl ${statusMsg.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'}`}>
           <div className="flex items-center justify-center gap-3">{statusMsg.text}<button onClick={() => setStatusMsg({text:'', type:''})} className="ml-4 font-black">X</button></div>
         </div>
       )}
 
-      <header className="bg-slate-950 border-b border-red-600/20 p-3 md:p-4 sticky top-0 z-50 flex justify-between items-center px-4 md:px-10 shadow-2xl">
+      {/* HEADER FIJO (Fixed Header) */}
+      <header className="bg-slate-950 border-b border-red-600/20 p-3 md:p-4 fixed top-0 left-0 right-0 z-50 flex justify-between items-center px-4 md:px-10 shadow-2xl">
         <div onClick={() => { setSearchTerm(''); window.location.hash = ''; }} className="flex items-center gap-2 cursor-pointer group">
           <div className="bg-red-600 p-1.5 md:p-2 rounded-lg shadow-lg group-hover:bg-red-500 transition-colors"><Package className="text-white w-4 h-4 md:w-5 md:h-5" /></div>
           <span className="font-black italic uppercase text-base md:text-lg tracking-tighter text-white leading-none">AUTO<span className="text-red-600">PARTS</span></span>
@@ -246,7 +221,8 @@ const App = () => {
         </button>
       </header>
 
-      <main>
+      {/* Padding superior para que el contenido no quede bajo el header fijo */}
+      <main className="pt-16 md:pt-20">
         {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => { if(searchTerm.trim()){ addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'search_logs'), { term: searchTerm.trim(), timestamp: serverTimestamp() }).catch(()=>{}); window.location.hash = '#/catalog'; } }} categories={dynamicCategories} isLoading={isLoadingInitialData} />}
         {view === 'catalog' && <CatalogView products={finalFilteredProducts} searchTerm={searchTerm} availableModels={availableModelsForCurrentSearch} selectedModel={selectedModelFilter} setSelectedModel={setSelectedModelFilter} onAdd={addToCart} onBack={() => { window.location.hash = ''; }} />}
         {view === 'admin-login' && <AdminLogin onLogin={(u, p) => { if (u === 'admin' && p === 'AutoPrecision2024*') { setIsAdminAuthenticated(true); return true; } return false; }} setStatus={setStatusMsg} />}
@@ -335,11 +311,9 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
             const key = Object.keys(row).find(k => names.includes(k.toLowerCase().trim()));
             return key ? row[key] : null;
           };
-          
           const code = repairEncoding(String(findKey(['code', 'codigo', 'cod', 'ref']) || '')).trim();
           const name = repairEncoding(String(findKey(['name', 'nombre', 'descripcion']) || '')).trim();
           const priceRaw = String(findKey(['price', 'precio', 'costo']) || '0').replace(',', '.');
-          
           if (code && name) {
             const ref = doc(db, 'artifacts', appId, 'public', 'data', 'products', code);
             batch.set(ref, { 
