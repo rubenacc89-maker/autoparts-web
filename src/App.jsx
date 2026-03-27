@@ -31,28 +31,24 @@ const appId = "autoparts-b4a5c";
 
 // --- UTILIDADES DE INTELIGENCIA LINGÜÍSTICA ---
 
-// 1. Limpieza de codificación: Repara Ñ y acentos rotos por importación de Excel/CSV
 const repairEncoding = (str) => {
   if (!str) return "";
   try {
-    // Intenta corregir errores de conversión UTF-8 comunes (ej: Ã± -> ñ)
     return decodeURIComponent(escape(str));
   } catch (e) {
-    return str; // Si falla, devuelve el original
+    return str;
   }
 };
 
-// 2. Normalización para Búsqueda: Quita acentos y cambia Ñ por N solo para comparar
 const normalizeForSearch = (text) => {
   if (!text) return "";
   return String(text)
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // Elimina tildes y diéresis
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
 };
 
-// 3. Algoritmo de Proximidad (Levenshtein)
 const getLevenshteinDistance = (a, b) => {
   const matrix = Array.from({ length: a.length + 1 }, () => 
     Array.from({ length: b.length + 1 }, (_, i) => i)
@@ -80,7 +76,16 @@ const App = () => {
   const [statusMsg, setStatusMsg] = useState({ text: '', type: '' });
   const [isXLSXLoaded, setIsXLSXLoaded] = useState(false);
 
-  // Inyección de Meta Tags y Estilos de Caracteres
+  // 1. EXTRAER CATEGORÍAS DINÁMICAS DEL INVENTARIO
+  const dynamicCategories = useMemo(() => {
+    const cats = products
+      .map(p => p.category)
+      .filter(c => c && c.trim() !== "") // Eliminamos vacíos
+      .map(c => c.toUpperCase().trim()); // Normalizamos a Mayúsculas
+    
+    return [...new Set(cats)].sort(); // Obtenemos valores únicos y ordenamos
+  }, [products]);
+
   useEffect(() => {
     document.documentElement.lang = "es";
     const meta = document.createElement('meta');
@@ -134,7 +139,6 @@ const App = () => {
     return () => { unsubProds(); unsubStats(); unsubLogs(); };
   }, [user, view]);
 
-  // --- BÚSQUEDA SMART CON SOPORTE Ñ/ACENTOS ---
   const filteredProducts = useMemo(() => {
     const query = searchTerm.trim();
     if (!query) return products;
@@ -181,8 +185,6 @@ const App = () => {
   };
 
   const handleWhatsApp = () => {
-    const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
-    updateDoc(statsRef, { totalOrdersClicked: increment(1) }).catch(()=>{});
     const phone = "584120000000"; 
     let msg = `🚗 *CONSULTA - AUTOPARTS*\n\n`;
     cart.forEach(i => msg += `• *${i.name}* (Ref: ${i.code}) x${i.qty}\n`);
@@ -213,7 +215,7 @@ const App = () => {
       </header>
 
       <main>
-        {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => { trackSearch(searchTerm); window.location.hash = '#/catalog'; }} />}
+        {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => { trackSearch(searchTerm); window.location.hash = '#/catalog'; }} categories={dynamicCategories} />}
         {view === 'catalog' && <CatalogView products={filteredProducts} onAdd={addToCart} onBack={() => { setSearchTerm(''); window.location.hash = ''; }} />}
         {view === 'admin-login' && <AdminLogin onLogin={(u, p) => { if (u === 'admin' && p === 'AutoPrecision2024*') { setIsAdminAuthenticated(true); return true; } return false; }} setStatus={setStatusMsg} />}
         {view === 'admin-dashboard' && <AdminDashboard products={products} stats={stats} logs={searchLogs} onLogout={() => { setIsAdminAuthenticated(false); window.location.hash = ''; }} setStatus={setStatusMsg} isReady={isXLSXLoaded} user={user} />}
@@ -231,8 +233,7 @@ const App = () => {
 
 // --- COMPONENTES DE VISTA ---
 
-const LandingView = ({ searchTerm, setSearchTerm, onSearch }) => {
-  const categories = ["Frenos", "Aceite", "Motor", "Suspensión", "Filtros"];
+const LandingView = ({ searchTerm, setSearchTerm, onSearch, categories }) => {
   return (
     <div className="min-h-[80vh] flex flex-col items-center justify-center p-6 text-center bg-white">
       <div className="bg-yellow-400 text-slate-950 px-5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.25em] mb-12 shadow-xl shadow-yellow-100 flex items-center gap-2">
@@ -243,15 +244,19 @@ const LandingView = ({ searchTerm, setSearchTerm, onSearch }) => {
       </h2>
       <form onSubmit={(e) => { e.preventDefault(); onSearch(); }} className="w-full max-w-2xl bg-slate-50 p-2 rounded-[2rem] shadow-2xl flex items-center border border-slate-100 mb-8 transition-all group">
         <Search className="ml-4 text-slate-300" size={24} />
-        <input type="text" placeholder="Busca por pieza, marca o carro..." className="w-full p-4 bg-transparent outline-none font-bold text-lg md:text-2xl placeholder:text-slate-200" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-        <button type="submit" className="bg-red-600 text-white p-4 rounded-[1.5rem] hover:bg-red-700 active:scale-95"><ArrowRight size={24}/></button>
+        <input type="text" placeholder="Busca por pieza, marca o carro..." className="w-full p-4 bg-transparent outline-none font-bold text-lg md:text-2xl placeholder:text-slate-200 text-slate-950" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+        <button type="submit" className="bg-red-600 text-white p-4 rounded-[1.5rem] hover:bg-red-700 active:scale-95 transition-transform"><ArrowRight size={24}/></button>
       </form>
-      <div className="flex flex-wrap justify-center gap-2">
-        {categories.map(cat => (
-          <button key={cat} onClick={() => { setSearchTerm(cat); window.location.hash = '#/catalog'; }} className="px-4 py-2 bg-white border border-slate-200 hover:border-red-600 hover:text-red-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all text-slate-400">
+      
+      {/* TAGS DINÁMICOS BASADOS EN CATEGORY DEL EXCEL */}
+      <div className="flex flex-wrap justify-center gap-2 max-w-3xl">
+        {categories.length > 0 ? categories.map(cat => (
+          <button key={cat} onClick={() => { setSearchTerm(cat); window.location.hash = '#/catalog'; }} className="px-4 py-2 bg-white border border-slate-200 hover:border-red-600 hover:text-red-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all text-slate-400 shadow-sm">
             {cat}
           </button>
-        ))}
+        )) : (
+          <p className="text-[10px] text-slate-200 uppercase tracking-widest italic">Cargando categorías...</p>
+        )}
       </div>
     </div>
   );
@@ -360,7 +365,6 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
             return key ? row[key] : null;
           };
           
-          // APLICAR REPARACIÓN DE CODIFICACIÓN EN LA IMPORTACIÓN
           const code = repairEncoding(String(findKey(['code', 'codigo', 'cod', 'ref']) || '')).trim();
           const name = repairEncoding(String(findKey(['name', 'nombre', 'descripcion']) || '')).trim();
           const priceRaw = String(findKey(['price', 'precio', 'costo']) || '0').replace(',', '.');
@@ -368,9 +372,7 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
           if (code && name) {
             const ref = doc(db, 'artifacts', appId, 'public', 'data', 'products', code);
             batch.set(ref, { 
-              code, 
-              name, 
-              brand: repairEncoding(findKey(['brand', 'marca', 'fabricante']) || ''),
+              code, name, brand: repairEncoding(findKey(['brand', 'marca', 'fabricante']) || ''),
               measure: repairEncoding(findKey(['measure', 'medida', 'medidas', 'peso', 'litros']) || ''),
               carBrand: repairEncoding(findKey(['carbrand', 'marcacarro', 'vehiculo', 'marca_auto']) || ''),
               model: repairEncoding(findKey(['model', 'modelo']) || ''),
@@ -382,7 +384,7 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
           }
         });
         await batch.commit(); setStatus({ text: `¡Éxito! ${count} productos sincronizados.`, type: 'success' });
-      } catch (err) { setStatus({ text: `Error de Permisos: Revisa la consola de Firebase`, type: 'error' }); } finally { setLoading(false); }
+      } catch (err) { setStatus({ text: `Error de Permisos`, type: 'error' }); } finally { setLoading(false); }
     };
     reader.readAsBinaryString(file);
   };
