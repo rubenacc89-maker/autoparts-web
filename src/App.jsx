@@ -3,7 +3,7 @@ import {
   Search, ShoppingCart, Package, TrendingUp, Plus, Minus, Trash2,
   ExternalLink, ArrowRight, Zap, LogOut, MessageSquare, MapPin, 
   BarChart2, Target, FileSpreadsheet, UploadCloud, Loader2, History, 
-  Eye, FileText, X, Lock, AlertCircle, CheckCircle, Trash
+  Eye, FileText, X, Lock, AlertCircle, CheckCircle, Trash, Filter, Car
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -70,20 +70,20 @@ const App = () => {
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedModelFilter, setSelectedModelFilter] = useState(''); // Nuevo Estado para el filtro de modelo
   const [stats, setStats] = useState({ totalVisits: 0, totalOrdersClicked: 0 });
   const [searchLogs, setSearchLogs] = useState([]);
   const [isCartBouncing, setIsCartBouncing] = useState(false);
   const [statusMsg, setStatusMsg] = useState({ text: '', type: '' });
   const [isXLSXLoaded, setIsXLSXLoaded] = useState(false);
 
-  // 1. EXTRAER CATEGORÍAS DINÁMICAS DEL INVENTARIO
+  // EXTRAER CATEGORÍAS DINÁMICAS
   const dynamicCategories = useMemo(() => {
     const cats = products
       .map(p => p.category)
-      .filter(c => c && c.trim() !== "") // Eliminamos vacíos
-      .map(c => c.toUpperCase().trim()); // Normalizamos a Mayúsculas
-    
-    return [...new Set(cats)].sort(); // Obtenemos valores únicos y ordenamos
+      .filter(c => c && c.trim() !== "")
+      .map(c => c.toUpperCase().trim());
+    return [...new Set(cats)].sort();
   }, [products]);
 
   useEffect(() => {
@@ -107,7 +107,10 @@ const App = () => {
     if (h === '#/admin') setView(isAdminAuthenticated ? 'admin-dashboard' : 'admin-login');
     else if (h === '#/cart') setView('cart');
     else if (h === '#/catalog') setView('catalog');
-    else setView('landing');
+    else {
+      setView('landing');
+      setSelectedModelFilter(''); // Resetear filtro al volver a inicio
+    }
   };
 
   useEffect(() => {
@@ -139,7 +142,10 @@ const App = () => {
     return () => { unsubProds(); unsubStats(); unsubLogs(); };
   }, [user, view]);
 
-  const filteredProducts = useMemo(() => {
+  // --- LÓGICA DE FILTRADO SMART (BÚSQUEDA + MODELO) ---
+  
+  // 1. Filtrado por búsqueda (Palabras clave)
+  const searchedProducts = useMemo(() => {
     const query = searchTerm.trim();
     if (!query) return products;
     
@@ -148,17 +154,15 @@ const App = () => {
       .split(' ')
       .filter(word => word.length > 1 && !stopWords.includes(word));
 
-    if (keywords.length === 0) return products;
-
     return products.filter(p => {
       const searchableFields = [
         p.name, p.code, p.model, p.category, p.brand, p.carBrand, p.measure, p.year
       ].map(f => normalizeForSearch(f));
-      
-      const productWords = searchableFields.join(' ').split(/\s+/);
+      const productFullText = searchableFields.join(' ');
+      const productWords = productFullText.split(/\s+/);
 
       return keywords.every(key => {
-        if (searchableFields.some(field => field.includes(key))) return true;
+        if (productFullText.includes(key)) return true;
         return productWords.some(pWord => {
           if (pWord.length < 3) return false;
           const distance = getLevenshteinDistance(key, pWord);
@@ -168,6 +172,32 @@ const App = () => {
       });
     });
   }, [products, searchTerm]);
+
+  // 2. Extraer Modelos únicos de los productos encontrados (Separados por Coma)
+  const availableModelsForCurrentSearch = useMemo(() => {
+    const modelsSet = new Set();
+    searchedProducts.forEach(p => {
+      if (p.model) {
+        // Separamos por coma y limpiamos espacios
+        p.model.split(',').forEach(m => {
+          const cleanModel = m.trim().toUpperCase();
+          if (cleanModel) modelsSet.add(cleanModel);
+        });
+      }
+    });
+    return Array.from(modelsSet).sort();
+  }, [searchedProducts]);
+
+  // 3. Filtrado Final por Modelo seleccionado en el Dropdown
+  const finalFilteredProducts = useMemo(() => {
+    if (!selectedModelFilter) return searchedProducts;
+    return searchedProducts.filter(p => {
+      if (!p.model) return false;
+      const productModels = p.model.split(',').map(m => m.trim().toUpperCase());
+      return productModels.includes(selectedModelFilter.toUpperCase());
+    });
+  }, [searchedProducts, selectedModelFilter]);
+
 
   const trackSearch = async (term) => {
     if (!term.trim() || !user) return;
@@ -216,7 +246,17 @@ const App = () => {
 
       <main>
         {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => { trackSearch(searchTerm); window.location.hash = '#/catalog'; }} categories={dynamicCategories} />}
-        {view === 'catalog' && <CatalogView products={filteredProducts} onAdd={addToCart} onBack={() => { setSearchTerm(''); window.location.hash = ''; }} />}
+        {view === 'catalog' && (
+          <CatalogView 
+            products={finalFilteredProducts} 
+            searchTerm={searchTerm}
+            availableModels={availableModelsForCurrentSearch}
+            selectedModel={selectedModelFilter}
+            setSelectedModel={setSelectedModelFilter}
+            onAdd={addToCart} 
+            onBack={() => { setSearchTerm(''); window.location.hash = ''; }} 
+          />
+        )}
         {view === 'admin-login' && <AdminLogin onLogin={(u, p) => { if (u === 'admin' && p === 'AutoPrecision2024*') { setIsAdminAuthenticated(true); return true; } return false; }} setStatus={setStatusMsg} />}
         {view === 'admin-dashboard' && <AdminDashboard products={products} stats={stats} logs={searchLogs} onLogout={() => { setIsAdminAuthenticated(false); window.location.hash = ''; }} setStatus={setStatusMsg} isReady={isXLSXLoaded} user={user} />}
         {view === 'cart' && <CartView cart={cart} setCart={setCart} onConfirm={handleWhatsApp} />}
@@ -247,32 +287,74 @@ const LandingView = ({ searchTerm, setSearchTerm, onSearch, categories }) => {
         <input type="text" placeholder="Busca por pieza, marca o carro..." className="w-full p-4 bg-transparent outline-none font-bold text-lg md:text-2xl placeholder:text-slate-200 text-slate-950" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
         <button type="submit" className="bg-red-600 text-white p-4 rounded-[1.5rem] hover:bg-red-700 active:scale-95 transition-transform"><ArrowRight size={24}/></button>
       </form>
-      
-      {/* TAGS DINÁMICOS BASADOS EN CATEGORY DEL EXCEL */}
       <div className="flex flex-wrap justify-center gap-2 max-w-3xl">
-        {categories.length > 0 ? categories.map(cat => (
+        {categories.map(cat => (
           <button key={cat} onClick={() => { setSearchTerm(cat); window.location.hash = '#/catalog'; }} className="px-4 py-2 bg-white border border-slate-200 hover:border-red-600 hover:text-red-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all text-slate-400 shadow-sm">
             {cat}
           </button>
-        )) : (
-          <p className="text-[10px] text-slate-200 uppercase tracking-widest italic">Cargando categorías...</p>
-        )}
+        ))}
       </div>
     </div>
   );
 };
 
-const CatalogView = ({ products, onAdd, onBack }) => (
+const CatalogView = ({ products, searchTerm, availableModels, selectedModel, setSelectedModel, onAdd, onBack }) => (
   <div className="p-4 md:p-10 max-w-6xl mx-auto pb-40 text-left">
-    <div className="flex justify-between items-center mb-10 border-b border-slate-100 pb-6 px-2">
-      <h2 className="text-3xl md:text-6xl font-black italic uppercase tracking-tighter text-slate-900 leading-none">Resultados</h2>
-      <button onClick={onBack} className="bg-slate-950 text-white px-5 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest">Cerrar</button>
+    {/* HEADER DE RESULTADOS CON CAPTION */}
+    <div className="mb-10 px-2">
+      <p className="text-[10px] font-black text-red-600 uppercase tracking-[0.3em] mb-1">
+        Mostrando resultados para:
+      </p>
+      <div className="flex justify-between items-end border-b-4 border-slate-950 pb-4">
+        <h2 className="text-3xl md:text-6xl font-black italic uppercase tracking-tighter text-slate-950 leading-none">
+          "{searchTerm || 'Todo'}"
+        </h2>
+        <button onClick={onBack} className="bg-slate-950 text-white px-5 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-red-600 transition-colors">Cerrar</button>
+      </div>
     </div>
+
+    {/* SECCIÓN DE FILTRO POR MODELO (DROPBOX DINÁMICO) */}
+    <div className="bg-slate-50 p-6 md:p-8 rounded-[2.5rem] mb-10 flex flex-col md:flex-row items-center gap-6 shadow-sm border border-slate-100">
+      <div className="flex items-center gap-4 text-slate-900">
+        <div className="bg-yellow-400 p-3 rounded-2xl shadow-lg"><Car size={24} strokeWidth={2.5}/></div>
+        <div>
+          <p className="text-[10px] font-black uppercase text-slate-400">Filtrar por Vehículo</p>
+          <p className="font-bold text-lg leading-none">Tu Garaje</p>
+        </div>
+      </div>
+      <div className="flex-1 w-full relative">
+        <select 
+          value={selectedModel}
+          onChange={(e) => setSelectedModel(e.target.value)}
+          className="w-full appearance-none bg-white p-5 rounded-2xl border-2 border-slate-200 outline-none focus:border-red-600 font-black uppercase text-sm tracking-widest cursor-pointer transition-all pr-12 shadow-sm text-slate-950"
+        >
+          <option value="">TODOS LOS MODELOS</option>
+          {availableModels.map(m => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+        <div className="absolute right-5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+          <Filter size={18} />
+        </div>
+      </div>
+      {selectedModel && (
+        <button 
+          onClick={() => setSelectedModel('')}
+          className="text-[10px] font-black uppercase text-red-600 hover:underline"
+        >
+          Limpiar Filtro
+        </button>
+      )}
+    </div>
+
+    {/* LISTADO DE PRODUCTOS */}
     <div className="space-y-6">
       {products.length === 0 ? (
-        <div className="text-center py-20 text-slate-200 italic font-black text-xl uppercase">Sin coincidencias</div>
+        <div className="text-center py-24 bg-slate-50 rounded-[4rem] border-4 border-dashed border-slate-100">
+          <p className="text-slate-300 font-black italic text-xl uppercase tracking-widest">Sin coincidencias para este vehículo</p>
+        </div>
       ) : products.map(p => (
-        <div key={p.id} className="bg-white p-6 md:p-12 rounded-[2.5rem] md:rounded-[4.5rem] border border-slate-100 flex flex-col md:flex-row items-center justify-between gap-6 hover:border-red-600 transition-all shadow-sm group relative overflow-hidden">
+        <div key={p.id} className="bg-white p-6 md:p-12 rounded-[2.5rem] md:rounded-[4.5rem] border border-slate-100 flex flex-col md:flex-row items-center justify-between gap-6 hover:border-red-600 transition-all shadow-xl group relative overflow-hidden">
           <div className="w-full">
             <h4 className="text-2xl md:text-4xl font-black italic tracking-tight group-hover:text-red-600 transition-colors mb-5 leading-tight text-slate-950 uppercase">{p.name}</h4>
             <div className="flex flex-wrap gap-2 md:gap-3">
@@ -286,7 +368,7 @@ const CatalogView = ({ products, onAdd, onBack }) => (
           </div>
           <div className="w-full flex items-center justify-between md:justify-end gap-6 md:gap-14 border-t md:border-t-0 pt-6 md:pt-0">
             <div className="flex flex-col items-start md:items-end">
-               <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-1">Precio Final</span>
+               <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest mb-1 text-right">Precio Final</span>
                <span className="text-5xl md:text-7xl font-black italic tracking-tighter text-slate-950 leading-none">${(p.price || 0).toFixed(2)}</span>
             </div>
             <button onClick={() => onAdd(p)} className="bg-red-600 text-white p-6 md:p-8 rounded-full hover:bg-slate-950 transition-all shadow-xl active:scale-90"><Plus size={36} strokeWidth={4}/></button>
@@ -302,7 +384,7 @@ const CartView = ({ cart, setCart, onConfirm }) => {
   const total = cart.reduce((a,b)=>a+(b.price*b.qty), 0);
   return (
     <div className="p-4 md:p-10 max-w-4xl mx-auto py-12 md:py-24 text-left">
-      <h2 className="text-5xl md:text-9xl font-black italic mb-16 tracking-tighter leading-none px-2 text-slate-900 uppercase">Tu <span className="text-red-600 underline decoration-yellow-400 decoration-4 md:decoration-8 underline-offset-4 md:underline-offset-8 italic leading-none">Cesta</span></h2>
+      <h2 className="text-5xl md:text-9xl font-black italic mb-16 tracking-tighter leading-none px-2 text-slate-900 uppercase italic">Tu <span className="text-red-600 underline decoration-yellow-400 decoration-4 md:decoration-8 underline-offset-4 md:underline-offset-8">Cesta</span></h2>
       {cart.length === 0 ? (
         <div className="bg-white border-4 border-dashed border-slate-100 rounded-[3rem] p-16 text-center">
           <p className="text-slate-300 font-black italic text-4xl uppercase mb-10 tracking-widest">Vacío</p>
@@ -330,8 +412,8 @@ const CartView = ({ cart, setCart, onConfirm }) => {
           ))}
           <div className="bg-slate-950 p-10 md:p-20 rounded-[3.5rem] md:rounded-[5rem] text-center text-white mt-12 shadow-3xl relative overflow-hidden group">
             <div className="relative z-10">
-              <p className="text-slate-600 uppercase font-black text-xs tracking-widest mb-6">Monto Total Estimado</p>
-              <h3 className="text-6xl md:text-[11rem] font-black italic mb-14 tracking-tighter leading-none">${total.toFixed(2)}</h3>
+              <p className="text-slate-600 uppercase font-black text-xs tracking-widest mb-6 text-center">Monto Total Estimado</p>
+              <h3 className="text-6xl md:text-[11rem] font-black italic mb-14 tracking-tighter leading-none text-center">${total.toFixed(2)}</h3>
               <button onClick={onConfirm} className="w-full bg-red-600 py-8 md:py-12 rounded-[2.5rem] md:rounded-[3.5rem] font-black text-2xl md:text-5xl flex items-center justify-center gap-6 hover:bg-red-500 transition-all shadow-2xl active:scale-95 shadow-red-900/40 leading-none">PEDIR POR WHATSAPP <ExternalLink size={32} strokeWidth={4}/></button>
             </div>
           </div>
