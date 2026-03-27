@@ -31,15 +31,25 @@ const appId = "autoparts-b4a5c";
 
 // --- UTILIDADES DE INTELIGENCIA LINGÜÍSTICA ---
 
+// Repara caracteres latinos (Ñ, acentos) que se rompen en importaciones CSV/Excel
 const repairEncoding = (str) => {
   if (!str) return "";
-  try {
-    return decodeURIComponent(escape(str));
-  } catch (e) {
-    return str;
-  }
+  let clean = String(str);
+  
+  const fixes = [
+    ['Ã±', 'ñ'], ['Ã‘', 'Ñ'], ['Ã¡', 'á'], ['Ã©', 'é'], ['Ã­', 'í'], ['Ã³', 'ó'], ['Ãº', 'ú'],
+    ['Ã\u0081', 'Á'], ['Ã\u0089', 'É'], ['Ã\u008d', 'Í'], ['Ã\u0093', 'Ó'], ['Ã\u009a', 'Ú'],
+    ['Ã ', 'Á'], ['Ã ', 'Í']
+  ];
+
+  fixes.forEach(([key, value]) => {
+    clean = clean.split(key).join(value);
+  });
+  
+  return clean;
 };
 
+// Normaliza texto para búsqueda: elimina acentos y trata Ñ como N para comparar
 const normalizeForSearch = (text) => {
   if (!text) return "";
   return String(text)
@@ -76,9 +86,71 @@ const App = () => {
   const [isCartBouncing, setIsCartBouncing] = useState(false);
   const [statusMsg, setStatusMsg] = useState({ text: '', type: '' });
   const [isXLSXLoaded, setIsXLSXLoaded] = useState(false);
-  const [isLoadingProducts, setIsLoadingProducts] = useState(true);
+  const [isLoadingInitialData, setIsLoadingInitialData] = useState(true);
 
-  // EXTRAER CATEGORÍAS DINÁMICAS
+  // 1. CARGA DE DATOS ÚNICA
+  useEffect(() => {
+    document.documentElement.lang = "es";
+    signInAnonymously(auth).catch(() => setStatusMsg({ text: 'Error de conexión a Google Cloud', type: 'error' }));
+    
+    const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (u) {
+        const unsubProds = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'products'), (snap) => {
+          setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+          setIsLoadingInitialData(false);
+        });
+
+        const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
+        const unsubStats = onSnapshot(statsRef, (s) => s.exists() && setStats(s.data()));
+
+        const unsubLogs = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'search_logs'), (snap) => {
+          setSearchLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)).slice(0, 15));
+        });
+
+        return () => { unsubProds(); unsubStats(); unsubLogs(); };
+      }
+    });
+
+    if (!window.XLSX) {
+      const script = document.createElement('script');
+      script.src = "https://cdn.sheetjs.com/xlsx-0.19.3/package/dist/xlsx.full.min.js";
+      script.async = true;
+      script.onload = () => setIsXLSXLoaded(true);
+      document.head.appendChild(script);
+    } else {
+      setIsXLSXLoaded(true);
+    }
+
+    return () => unsubscribeAuth();
+  }, []);
+
+  // 2. CONTROL DE VISTAS
+  useEffect(() => {
+    const handleHash = () => {
+      const h = window.location.hash;
+      if (h === '#/admin') setView(isAdminAuthenticated ? 'admin-dashboard' : 'admin-login');
+      else if (h === '#/cart') setView('cart');
+      else if (h === '#/catalog') setView('catalog');
+      else {
+        setView('landing');
+        setSelectedModelFilter('');
+      }
+    };
+    window.addEventListener('hashchange', handleHash);
+    handleHash();
+    
+    if (user && window.location.hash === '') {
+      const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
+      updateDoc(statsRef, { totalVisits: increment(1) }).catch(() => 
+        setDoc(statsRef, { totalVisits: 1, totalOrdersClicked: 0 }, { merge: true })
+      );
+    }
+
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, [isAdminAuthenticated, user]);
+
+  // 3. CATEGORÍAS DINÁMICAS
   const dynamicCategories = useMemo(() => {
     const cats = products
       .map(p => p.category)
@@ -87,93 +159,42 @@ const App = () => {
     return [...new Set(cats)].sort();
   }, [products]);
 
-  useEffect(() => {
-    document.documentElement.lang = "es";
-    const meta = document.createElement('meta');
-    meta.charset = "UTF-8";
-    document.head.appendChild(meta);
-  }, []);
-
-  useEffect(() => {
-    if (window.XLSX) { setIsXLSXLoaded(true); return; }
-    const script = document.createElement('script');
-    script.src = "https://cdn.sheetjs.com/xlsx-0.19.3/package/dist/xlsx.full.min.js";
-    script.async = true;
-    script.onload = () => setIsXLSXLoaded(true);
-    document.head.appendChild(script);
-  }, []);
-
-  const syncViewWithHash = () => {
-    const h = window.location.hash;
-    if (h === '#/admin') setView(isAdminAuthenticated ? 'admin-dashboard' : 'admin-login');
-    else if (h === '#/cart') setView('cart');
-    else if (h === '#/catalog') setView('catalog');
-    else {
-      setView('landing');
-      setSelectedModelFilter('');
-    }
-  };
-
-  useEffect(() => {
-    window.addEventListener('hashchange', syncViewWithHash);
-    syncViewWithHash();
-    return () => window.removeEventListener('hashchange', syncViewWithHash);
-  }, [isAdminAuthenticated]);
-
-  useEffect(() => {
-    signInAnonymously(auth).catch(() => setStatusMsg({ text: 'Error de conexión', type: 'error' }));
-    onAuthStateChanged(auth, setUser);
-  }, []);
-
-  useEffect(() => {
-    if (!user) return;
-    setIsLoadingProducts(true);
-    const statsRef = doc(db, 'artifacts', appId, 'public', 'data', 'stats', 'global');
-    if (view === 'landing') {
-      updateDoc(statsRef, { totalVisits: increment(1) }).catch(() => 
-        setDoc(statsRef, { totalVisits: 1, totalOrdersClicked: 0 }, { merge: true })
-      );
-    }
-    const unsubProds = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'products'), (snap) => {
-      setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setIsLoadingProducts(false);
-    });
-    const unsubStats = onSnapshot(statsRef, (s) => s.exists() && setStats(s.data()));
-    const unsubLogs = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'search_logs'), (snap) => {
-      setSearchLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)).slice(0, 15));
-    });
-    return () => { unsubProds(); unsubStats(); unsubLogs(); };
-  }, [user, view]);
-
-  // --- LÓGICA DE FILTRADO SMART ---
+  // 4. LÓGICA DE BÚSQUEDA SMART
   const searchedProducts = useMemo(() => {
     const query = searchTerm.trim();
     if (!query) return products;
+    
     const stopWords = ['de', 'para', 'con', 'la', 'el', 'los', 'las', 'y', 'a', 'en', 'por'];
-    const keywords = normalizeForSearch(query).split(' ').filter(word => word.length > 1 && !stopWords.includes(word));
+    const keywords = normalizeForSearch(query)
+      .split(' ')
+      .filter(word => word.length > 1 && !stopWords.includes(word));
+
+    if (keywords.length === 0) return products;
 
     return products.filter(p => {
-      const searchableFields = [p.name, p.code, p.model, p.category, p.brand, p.carBrand, p.measure, p.year].map(f => normalizeForSearch(f));
-      const productFullText = searchableFields.join(' ');
-      const productWords = productFullText.split(/\s+/);
+      const fields = [p.name, p.code, p.model, p.category, p.brand, p.carBrand, p.measure, p.year].map(f => normalizeForSearch(f));
+      const fullText = fields.join(' ');
+      const words = fullText.split(/\s+/);
+
       return keywords.every(key => {
-        if (productFullText.includes(key)) return true;
-        return productWords.some(pWord => {
-          if (pWord.length < 3) return false;
-          const distance = getLevenshteinDistance(key, pWord);
-          return distance <= (key.length > 6 ? 2 : 1);
+        if (fullText.includes(key)) return true;
+        return words.some(w => {
+          if (w.length < 3) return false;
+          const dist = getLevenshteinDistance(key, w);
+          return dist <= (key.length > 6 ? 2 : 1);
         });
       });
     });
   }, [products, searchTerm]);
 
+  // 5. FILTRO DE MODELOS (GARAJE)
   const availableModelsForCurrentSearch = useMemo(() => {
     const modelsSet = new Set();
     searchedProducts.forEach(p => {
       if (p.model) {
         p.model.split(',').forEach(m => {
-          const cleanModel = m.trim().toUpperCase();
-          if (cleanModel) modelsSet.add(cleanModel);
+          const clean = m.trim().toUpperCase();
+          if (clean) modelsSet.add(clean);
         });
       }
     });
@@ -200,7 +221,7 @@ const App = () => {
 
   const handleWhatsApp = () => {
     const phone = "584120000000"; 
-    let msg = `🚗 *CONSULTA - AUTOPARTS*\n\n`;
+    let msg = `🚗 *NUEVA CONSULTA - AUTOPARTS*\n\n`;
     cart.forEach(i => msg += `• *${i.name}* (Ref: ${i.code}) x${i.qty}\n`);
     msg += `\n💰 *Total Estimado: $${cart.reduce((a,b)=>a+(b.price*b.qty),0).toFixed(2)} USD*`;
     window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
@@ -210,10 +231,7 @@ const App = () => {
     <div className="min-h-screen bg-white text-slate-950 font-sans selection:bg-red-100 overflow-x-hidden antialiased">
       {statusMsg.text && (
         <div className={`fixed top-0 left-0 right-0 z-[200] p-4 text-center font-bold text-white shadow-xl ${statusMsg.type === 'error' ? 'bg-red-600' : 'bg-emerald-600'}`}>
-          <div className="flex items-center justify-center gap-3">
-            {statusMsg.text}
-            <button onClick={() => setStatusMsg({text:'', type:''})} className="ml-4 font-black">X</button>
-          </div>
+          <div className="flex items-center justify-center gap-3">{statusMsg.text}<button onClick={() => setStatusMsg({text:'', type:''})} className="ml-4 font-black">X</button></div>
         </div>
       )}
 
@@ -229,151 +247,51 @@ const App = () => {
       </header>
 
       <main>
-        {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => { trackSearch(searchTerm); window.location.hash = '#/catalog'; }} categories={dynamicCategories} isLoading={isLoadingProducts} />}
-        {view === 'catalog' && (
-          <CatalogView 
-            products={finalFilteredProducts} 
-            searchTerm={searchTerm}
-            availableModels={availableModelsForCurrentSearch}
-            selectedModel={selectedModelFilter}
-            setSelectedModel={setSelectedModelFilter}
-            onAdd={addToCart} 
-            onBack={() => { setSearchTerm(''); window.location.hash = ''; }} 
-          />
-        )}
+        {view === 'landing' && <LandingView searchTerm={searchTerm} setSearchTerm={setSearchTerm} onSearch={() => { if(searchTerm.trim()){ addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'search_logs'), { term: searchTerm.trim(), timestamp: serverTimestamp() }).catch(()=>{}); window.location.hash = '#/catalog'; } }} categories={dynamicCategories} isLoading={isLoadingInitialData} />}
+        {view === 'catalog' && <CatalogView products={finalFilteredProducts} searchTerm={searchTerm} availableModels={availableModelsForCurrentSearch} selectedModel={selectedModelFilter} setSelectedModel={setSelectedModelFilter} onAdd={addToCart} onBack={() => { window.location.hash = ''; }} />}
         {view === 'admin-login' && <AdminLogin onLogin={(u, p) => { if (u === 'admin' && p === 'AutoPrecision2024*') { setIsAdminAuthenticated(true); return true; } return false; }} setStatus={setStatusMsg} />}
         {view === 'admin-dashboard' && <AdminDashboard products={products} stats={stats} logs={searchLogs} onLogout={() => { setIsAdminAuthenticated(false); window.location.hash = ''; }} setStatus={setStatusMsg} isReady={isXLSXLoaded} user={user} />}
         {view === 'cart' && <CartView cart={cart} setCart={setCart} onConfirm={handleWhatsApp} />}
       </main>
 
-      <footer className="py-20 text-center bg-slate-950 px-6">
-        <button onClick={() => window.location.hash = '#/admin'} className="text-[10px] font-black text-slate-700 uppercase tracking-[0.5em] hover:text-red-600 transition-colors cursor-default">
-          &copy; 2024 AUTOPARTS PRECISION
-        </button>
+      <footer className="py-16 text-center bg-slate-950 px-6 border-t border-red-600/10">
+        <div className="max-w-4xl mx-auto flex flex-col items-center gap-6">
+          <div className="flex items-center gap-2 bg-white/5 px-6 py-3 rounded-2xl border border-white/5 shadow-inner">
+            <span className="text-lg">🇻🇪</span>
+            <span className="text-[11px] font-black uppercase text-slate-300 tracking-[0.2em]">San Diego, Valencia, Edo. Carabobo</span>
+          </div>
+          <button onClick={() => window.location.hash = '#/admin'} className="text-[10px] font-black text-slate-700 uppercase tracking-[0.5em] hover:text-red-600 transition-colors">
+            &copy; 2024 AUTOPARTS PRECISION • VENEZUELA
+          </button>
+        </div>
       </footer>
     </div>
   );
 };
 
-// --- COMPONENTES DE VISTA ---
+// --- COMPONENTES ---
 
-const LandingView = ({ searchTerm, setSearchTerm, onSearch, categories, isLoading }) => {
-  return (
-    <div className="min-h-[80vh] flex flex-col items-center justify-center p-6 text-center bg-white">
-      <div className="bg-yellow-400 text-slate-950 px-5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.25em] mb-10 shadow-xl shadow-yellow-100 flex items-center gap-2">
-        <Zap size={14} fill="currentColor" /> El repuesto que necesitas hoy
-      </div>
-      <h2 className="text-5xl md:text-9xl font-black tracking-tighter italic mb-8 md:mb-10 leading-[0.9] text-slate-950 px-2 uppercase">
-        Calidad y <br/><span className="text-red-600">Potencia.</span>
-      </h2>
-      <form onSubmit={(e) => { e.preventDefault(); onSearch(); }} className="w-full max-w-2xl bg-slate-50 p-2 rounded-[2rem] shadow-2xl flex items-center border border-slate-100 mb-8 transition-all group">
-        <Search className="ml-4 text-slate-300" size={24} />
-        <input type="text" placeholder="Busca pieza o carro..." className="w-full p-4 bg-transparent outline-none font-bold text-lg md:text-2xl placeholder:text-slate-200 text-slate-950" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-        <button type="submit" className="bg-red-600 text-white p-4 rounded-[1.5rem] hover:bg-red-700 active:scale-95 transition-transform"><ArrowRight size={24}/></button>
-      </form>
-      
-      <div className="flex flex-wrap justify-center gap-2 max-w-3xl">
-        {isLoading ? (
-          // SKELETON LOADERS
-          [1,2,3,4,5].map(i => (
-            <div key={i} className="px-8 py-4 bg-slate-100 rounded-xl animate-pulse w-24 h-10"></div>
-          ))
-        ) : categories.map(cat => (
-          <button key={cat} onClick={() => { setSearchTerm(cat); window.location.hash = '#/catalog'; }} className="px-4 py-2 bg-white border border-slate-200 hover:border-red-600 hover:text-red-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all text-slate-400 shadow-sm">
-            {cat}
-          </button>
-        ))}
-      </div>
+const LandingView = ({ searchTerm, setSearchTerm, onSearch, categories, isLoading }) => (
+  <div className="min-h-[80vh] flex flex-col items-center justify-center p-6 text-center bg-white">
+    <div className="bg-yellow-400 text-slate-950 px-5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.25em] mb-10 shadow-xl flex items-center gap-2"><Zap size={14} fill="currentColor" /> El repuesto que necesitas hoy</div>
+    <h2 className="text-5xl md:text-9xl font-black tracking-tighter italic mb-8 md:mb-10 leading-[0.9] text-slate-950 px-2 uppercase italic">Calidad y <br/><span className="text-red-600">Potencia.</span></h2>
+    <form onSubmit={(e) => { e.preventDefault(); onSearch(); }} className="w-full max-w-2xl bg-slate-50 p-2 rounded-[2rem] shadow-2xl flex items-center border border-slate-100 mb-8 transition-all group">
+      <Search className="ml-4 text-slate-300" size={24} /><input type="text" placeholder="Busca pieza o carro..." className="w-full p-4 bg-transparent outline-none font-bold text-lg md:text-2xl placeholder:text-slate-200 text-slate-950" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+      <button type="submit" className="bg-red-600 text-white p-4 rounded-[1.5rem] hover:bg-red-700 active:scale-95 transition-transform"><ArrowRight size={24}/></button>
+    </form>
+    <div className="flex flex-wrap justify-center gap-2 max-w-3xl">
+      {isLoading ? [1,2,3,4,5].map(i => <div key={i} className="px-8 py-4 bg-slate-100 rounded-xl animate-pulse w-24 h-10"></div>) : categories.map(cat => <button key={cat} onClick={() => { setSearchTerm(cat); window.location.hash = '#/catalog'; }} className="px-4 py-2 bg-white border border-slate-200 hover:border-red-600 hover:text-red-600 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all text-slate-400 shadow-sm">{cat}</button>)}
     </div>
-  );
-};
+  </div>
+);
 
 const CatalogView = ({ products, searchTerm, availableModels, selectedModel, setSelectedModel, onAdd, onBack }) => (
   <div className="p-3 md:p-10 max-w-6xl mx-auto pb-40 text-left">
-    {/* HEADER DE RESULTADOS COMPACTO */}
-    <div className="mb-6 md:mb-10 px-2">
-      <div className="flex justify-between items-center border-b-2 md:border-b-4 border-slate-950 pb-3 md:pb-4">
-        <div>
-           <p className="text-[8px] md:text-[10px] font-black text-red-600 uppercase tracking-widest leading-none mb-1">
-            Buscaste:
-          </p>
-          <h2 className="text-xl md:text-6xl font-black italic uppercase tracking-tighter text-slate-950 leading-none truncate max-w-[200px] md:max-w-none">
-            "{searchTerm || 'Todo'}"
-          </h2>
-        </div>
-        <button onClick={onBack} className="bg-slate-950 text-white px-4 py-2 md:px-5 md:py-2 rounded-xl text-[8px] md:text-[9px] font-black uppercase tracking-widest hover:bg-red-600 transition-colors">Cerrar</button>
-      </div>
-    </div>
-
-    {/* FILTRO "TU GARAJE" MOBILE OPTIMIZED */}
-    <div className="bg-white p-4 md:p-8 rounded-3xl md:rounded-[2.5rem] mb-6 md:mb-10 flex flex-col md:flex-row items-center gap-3 md:gap-6 shadow-xl border border-slate-100 ring-4 ring-slate-50/50">
-      <div className="flex items-center w-full md:w-auto gap-3 text-slate-900 border-b md:border-b-0 md:border-r border-slate-100 pb-3 md:pb-0 md:pr-6">
-        <div className="bg-yellow-400 p-2 md:p-3 rounded-xl md:rounded-2xl shadow-lg"><Car size={18} md:size={24} strokeWidth={3}/></div>
-        <div>
-          <p className="text-[7px] md:text-[10px] font-black uppercase text-slate-400 leading-none mb-0.5">Filtrar por</p>
-          <p className="font-black text-sm md:text-lg leading-none uppercase italic">Tu Garaje</p>
-        </div>
-      </div>
-      
-      <div className="flex-1 w-full flex items-center gap-2">
-        <div className="flex-1 relative">
-          <select 
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="w-full appearance-none bg-slate-50 p-3 md:p-5 rounded-xl md:rounded-2xl border border-slate-200 outline-none focus:border-red-600 font-black uppercase text-[10px] md:text-sm tracking-widest cursor-pointer transition-all pr-10 text-slate-950"
-          >
-            <option value="">TODOS LOS MODELOS</option>
-            {availableModels.map(m => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-          <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-            <ChevronDown size={14} md:size={18} />
-          </div>
-        </div>
-        
-        {selectedModel && (
-          <button 
-            onClick={() => setSelectedModel('')}
-            className="p-3 md:p-5 bg-red-50 text-red-600 rounded-xl md:rounded-2xl hover:bg-red-600 hover:text-white transition-all"
-            title="Limpiar Filtro"
-          >
-            <X size={16} md:size={20} strokeWidth={3}/>
-          </button>
-        )}
-      </div>
-    </div>
-
-    {/* LISTADO DE PRODUCTOS */}
-    <div className="space-y-4 md:space-y-6">
-      {products.length === 0 ? (
-        <div className="text-center py-20 bg-slate-50 rounded-[2rem] md:rounded-[4rem] border-2 border-dashed border-slate-100">
-          <p className="text-slate-300 font-black italic text-sm md:text-xl uppercase tracking-widest">Sin coincidencias para este vehículo</p>
-        </div>
-      ) : products.map(p => (
-        <div key={p.id} className="bg-white p-5 md:p-12 rounded-[2rem] md:rounded-[4.5rem] border border-slate-100 flex flex-col md:flex-row items-center justify-between gap-5 md:gap-6 hover:border-red-600 transition-all shadow-xl group relative overflow-hidden">
-          <div className="w-full">
-            <h4 className="text-lg md:text-4xl font-black italic tracking-tight group-hover:text-red-600 transition-colors mb-3 md:mb-5 leading-tight text-slate-950 uppercase">{p.name}</h4>
-            <div className="flex flex-wrap gap-1.5 md:gap-3">
-              {p.brand && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.brand}</span>}
-              {p.measure && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.measure}</span>}
-              {p.carBrand && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.carBrand}</span>}
-              {p.model && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.model}</span>}
-              {p.year && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.year}</span>}
-              <span className="text-[8px] md:text-[10px] font-mono font-bold text-slate-300 py-1 md:py-1.5 ml-1">REF: {p.code}</span>
-            </div>
-          </div>
-          <div className="w-full flex items-center justify-between md:justify-end gap-4 md:gap-14 border-t md:border-t-0 pt-4 md:pt-0">
-            <div className="flex flex-col items-start md:items-end">
-               <span className="text-[8px] md:text-[10px] font-black text-slate-300 uppercase tracking-widest mb-0.5 leading-none">Precio Final</span>
-               <span className="text-3xl md:text-7xl font-black italic tracking-tighter text-slate-950 leading-none">${(p.price || 0).toFixed(2)}</span>
-            </div>
-            <button onClick={() => onAdd(p)} className="bg-red-600 text-white p-4 md:p-8 rounded-full hover:bg-slate-950 transition-all shadow-xl active:scale-90"><Plus size={24} md:size={36} strokeWidth={4}/></button>
-          </div>
-          <div className="absolute top-0 right-0 w-20 md:w-24 h-20 md:h-24 bg-slate-50/50 rounded-bl-full -mr-10 -mt-10 group-hover:bg-red-50 transition-colors -z-10"></div>
-        </div>
-      ))}
-    </div>
+    <div className="mb-6 md:mb-10 px-2"><div className="flex justify-between items-center border-b-2 md:border-b-4 border-slate-950 pb-3 md:pb-4"><div><p className="text-[8px] md:text-[10px] font-black text-red-600 uppercase tracking-widest leading-none mb-1">Mostrando:</p><h2 className="text-xl md:text-6xl font-black italic uppercase tracking-tighter text-slate-950 leading-none truncate max-w-[200px] md:max-w-none">"{searchTerm || 'Todo'}"</h2></div><button onClick={onBack} className="bg-slate-950 text-white px-4 py-2 md:px-5 md:py-2 rounded-xl text-[8px] md:text-[9px] font-black uppercase tracking-widest hover:bg-red-600 transition-colors">Volver</button></div></div>
+    <div className="bg-white p-4 md:p-8 rounded-3xl md:rounded-[2.5rem] mb-6 md:mb-10 flex flex-col md:flex-row items-center gap-3 md:gap-6 shadow-xl border border-slate-100 ring-4 ring-slate-50/50"><div className="flex items-center w-full md:w-auto gap-3 text-slate-900 border-b md:border-b-0 md:border-r border-slate-100 pb-3 md:pb-0 md:pr-6"><div className="bg-yellow-400 p-2 md:p-3 rounded-xl md:rounded-2xl shadow-lg"><Car size={18} md:size={24} strokeWidth={3}/></div><div><p className="text-[7px] md:text-[10px] font-black uppercase text-slate-400 leading-none mb-0.5">Filtrar por</p><p className="font-black text-sm md:text-lg leading-none uppercase italic">Tu Garaje</p></div></div><div className="flex-1 w-full flex items-center gap-2"><div className="flex-1 relative"><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="w-full appearance-none bg-slate-50 p-3 md:p-5 rounded-xl md:rounded-2xl border border-slate-200 outline-none focus:border-red-600 font-black uppercase text-[10px] md:text-sm tracking-widest cursor-pointer transition-all pr-10 text-slate-950"><option value="">TODOS LOS MODELOS</option>{availableModels.map(m => <option key={m} value={m}>{m}</option>)}</select><div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400"><ChevronDown size={14} md:size={18} /></div></div>{selectedModel && <button onClick={() => setSelectedModel('')} className="p-3 md:p-5 bg-red-50 text-red-600 rounded-xl md:rounded-2xl hover:bg-red-600 hover:text-white transition-all"><X size={16} md:size={20} strokeWidth={3}/></button>}</div></div>
+    <div className="space-y-4 md:space-y-6">{products.length === 0 ? <div className="text-center py-20 bg-slate-50 rounded-[2rem] md:rounded-[4rem] border-2 border-dashed border-slate-100"><p className="text-slate-300 font-black italic text-sm md:text-xl uppercase tracking-widest">Sin resultados</p></div> : products.map(p => (
+      <div key={p.id} className="bg-white p-5 md:p-12 rounded-[2rem] md:rounded-[4.5rem] border border-slate-100 flex flex-col md:flex-row items-center justify-between gap-5 md:gap-6 hover:border-red-600 transition-all shadow-xl group relative overflow-hidden"><div className="w-full"><h4 className="text-lg md:text-4xl font-black italic tracking-tight group-hover:text-red-600 transition-colors mb-3 md:mb-5 leading-tight text-slate-950 uppercase">{p.name}</h4><div className="flex flex-wrap gap-1.5 md:gap-3">{p.brand && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.brand}</span>}{p.measure && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.measure}</span>}{p.carBrand && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.carBrand}</span>}{p.model && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.model}</span>}{p.year && <span className="text-[8px] md:text-[10px] font-black bg-yellow-400 text-slate-950 px-2 md:px-4 py-1 md:py-1.5 rounded-md md:rounded-lg uppercase shadow-sm border border-yellow-500/20">{p.year}</span>}<span className="text-[8px] md:text-[10px] font-mono font-bold text-slate-300 py-1 md:py-1.5 ml-1">REF: {p.code}</span></div></div><div className="w-full flex items-center justify-between md:justify-end gap-4 md:gap-14 border-t md:border-t-0 pt-4 md:pt-0"><div className="flex flex-col items-start md:items-end"><span className="text-[8px] md:text-[10px] font-black text-slate-300 uppercase tracking-widest mb-0.5 leading-none">Precio Final</span><span className="text-3xl md:text-7xl font-black italic tracking-tighter text-slate-950 leading-none">${(p.price || 0).toFixed(2)}</span></div><button onClick={() => onAdd(p)} className="bg-red-600 text-white p-4 md:p-8 rounded-full hover:bg-slate-950 transition-all shadow-xl active:scale-90"><Plus size={24} md:size={36} strokeWidth={4}/></button></div><div className="absolute top-0 right-0 w-20 md:w-24 h-20 md:h-24 bg-slate-50/50 rounded-bl-full -mr-10 -mt-10 group-hover:bg-red-50 transition-colors -z-10"></div></div>
+    ))}</div>
   </div>
 );
 
@@ -381,39 +299,13 @@ const CartView = ({ cart, setCart, onConfirm }) => {
   const total = cart.reduce((a,b)=>a+(b.price*b.qty), 0);
   return (
     <div className="p-4 md:p-10 max-w-4xl mx-auto py-12 md:py-24 text-left">
-      <h2 className="text-4xl md:text-9xl font-black italic mb-10 md:mb-16 tracking-tighter leading-none px-2 text-slate-900 uppercase italic">Tu <span className="text-red-600 underline decoration-yellow-400 decoration-4 md:decoration-8 underline-offset-4 md:underline-offset-8">Cesta</span></h2>
-      {cart.length === 0 ? (
-        <div className="bg-white border-4 border-dashed border-slate-100 rounded-[2rem] md:rounded-[3rem] p-12 text-center">
-          <p className="text-slate-300 font-black italic text-xl md:text-4xl uppercase mb-8 md:mb-10 tracking-widest">Vacío</p>
-          <button onClick={() => window.location.hash = '#/catalog'} className="bg-red-600 text-white px-10 py-4 md:px-12 md:py-6 rounded-2xl font-black shadow-lg hover:bg-slate-950 transition-all">CATÁLOGO</button>
-        </div>
-      ) : (
+      <h2 className="text-4xl md:text-9xl font-black italic mb-10 md:mb-16 tracking-tighter leading-none px-2 text-slate-900 uppercase italic leading-none">Tu <span className="text-red-600 underline decoration-yellow-400 decoration-4 md:decoration-8 underline-offset-4 md:underline-offset-8 italic">Cesta</span></h2>
+      {cart.length === 0 ? <div className="bg-white border-4 border-dashed border-slate-100 rounded-[2rem] md:rounded-[3rem] p-12 text-center"><p className="text-slate-300 font-black italic text-xl md:text-4xl uppercase mb-8 md:mb-10 tracking-widest">Vacío</p><button onClick={() => window.location.hash = '#/catalog'} className="bg-red-600 text-white px-10 py-4 md:px-12 md:py-6 rounded-2xl font-black shadow-lg hover:bg-slate-950 transition-all">CATÁLOGO</button></div> : (
         <div className="space-y-4 md:space-y-5">
           {cart.map(item => (
-            <div key={item.id} className="bg-white p-5 md:p-8 rounded-[1.5rem] md:rounded-[3.5rem] border border-slate-100 shadow-xl group hover:border-red-600 transition-all relative">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6">
-                <div className="flex-1">
-                  <h4 className="font-black text-lg md:text-3xl italic tracking-tight mb-3 md:mb-4 pr-12 text-slate-950 leading-none uppercase">{item.name}</h4>
-                  <div className="flex items-center gap-6 md:gap-8">
-                    <p className="text-red-600 font-black text-xl md:text-4xl italic leading-none">${item.price.toFixed(2)}</p>
-                    <div className="flex items-center bg-slate-950 text-white rounded-xl md:rounded-2xl px-3 md:px-6 py-2 md:py-3 gap-4 md:gap-6 shadow-lg">
-                      <button onClick={() => setCart(c => c.map(i => i.id === item.id ? {...i, qty: Math.max(1, i.qty-1)} : i))}><Minus size={14} md:size={20} strokeWidth={3}/></button>
-                      <span className="font-black text-sm md:text-2xl w-4 md:w-6 text-center">{item.qty}</span>
-                      <button onClick={() => setCart(c => c.map(i => i.id === item.id ? {...i, qty: i.qty+1} : i))}><Plus size={14} md:size={20} strokeWidth={3}/></button>
-                    </div>
-                  </div>
-                </div>
-                <button onClick={() => setCart(c => c.filter(i => i.id !== item.id))} className="absolute top-4 right-4 md:top-6 md:right-6 p-2 md:p-4 bg-red-50 text-red-500 rounded-full hover:bg-red-600 hover:text-white transition-all shadow-sm"><Trash2 size={18} md:size={24}/></button>
-              </div>
-            </div>
+            <div key={item.id} className="bg-white p-5 md:p-8 rounded-[1.5rem] md:rounded-[3.5rem] border border-slate-100 shadow-xl group hover:border-red-600 transition-all relative"><div className="flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6"><div className="flex-1"><h4 className="font-black text-lg md:text-3xl italic tracking-tight mb-3 md:mb-4 pr-12 text-slate-950 leading-none uppercase">{item.name}</h4><div className="flex items-center gap-6 md:gap-8"><p className="text-red-600 font-black text-xl md:text-4xl italic leading-none">${item.price.toFixed(2)}</p><div className="flex items-center bg-slate-950 text-white rounded-xl md:rounded-2xl px-3 md:px-6 py-2 md:py-3 gap-4 md:gap-6 shadow-lg"><button onClick={() => setCart(c => c.map(i => i.id === item.id ? {...i, qty: Math.max(1, i.qty-1)} : i))}><Minus size={14} md:size={20} strokeWidth={3}/></button><span className="font-black text-sm md:text-2xl w-4 md:w-6 text-center">{item.qty}</span><button onClick={() => setCart(c => c.map(i => i.id === item.id ? {...i, qty: i.qty+1} : i))}><Plus size={14} md:size={20} strokeWidth={3}/></button></div></div></div><button onClick={() => setCart(c => c.filter(i => i.id !== item.id))} className="absolute top-4 right-4 md:top-6 md:right-6 p-2 md:p-4 bg-red-50 text-red-500 rounded-full hover:bg-red-600 hover:text-white transition-all shadow-sm"><Trash2 size={18} md:size={24}/></button></div></div>
           ))}
-          <div className="bg-slate-950 p-8 md:p-20 rounded-[2.5rem] md:rounded-[5rem] text-center text-white mt-10 md:mt-12 shadow-3xl relative overflow-hidden group">
-            <div className="relative z-10">
-              <p className="text-slate-600 uppercase font-black text-[8px] md:text-xs tracking-widest mb-4 md:mb-6 text-center">Monto Total Estimado</p>
-              <h3 className="text-5xl md:text-[11rem] font-black italic mb-10 md:mb-14 tracking-tighter leading-none text-center">${total.toFixed(2)}</h3>
-              <button onClick={onConfirm} className="w-full bg-red-600 py-6 md:py-12 rounded-2xl md:rounded-[3.5rem] font-black text-lg md:text-5xl flex items-center justify-center gap-3 md:gap-6 hover:bg-red-500 transition-all shadow-2xl active:scale-95 shadow-red-900/40 leading-none">PEDIR POR WHATSAPP <ExternalLink size={24} md:size={32} strokeWidth={4}/></button>
-            </div>
-          </div>
+          <div className="bg-slate-950 p-8 md:p-20 rounded-[2.5rem] md:rounded-[5rem] text-center text-white mt-10 md:mt-12 shadow-3xl relative overflow-hidden group"><div className="relative z-10"><p className="text-slate-600 uppercase font-black text-[8px] md:text-xs tracking-widest mb-4 md:mb-6 text-center">Monto Total Estimado</p><h3 className="text-5xl md:text-[11rem] font-black italic mb-10 md:mb-14 tracking-tighter leading-none text-center">${total.toFixed(2)}</h3><button onClick={onConfirm} className="w-full bg-red-600 py-6 md:py-12 rounded-2xl md:rounded-[3.5rem] font-black text-lg md:text-5xl flex items-center justify-center gap-3 md:gap-6 hover:bg-red-500 transition-all shadow-2xl active:scale-95 shadow-red-900/40 leading-none uppercase italic">Pedir por WhatsApp <ExternalLink size={24} md:size={32} strokeWidth={4}/></button></div></div>
         </div>
       )}
     </div>
@@ -443,9 +335,11 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
             const key = Object.keys(row).find(k => names.includes(k.toLowerCase().trim()));
             return key ? row[key] : null;
           };
+          
           const code = repairEncoding(String(findKey(['code', 'codigo', 'cod', 'ref']) || '')).trim();
           const name = repairEncoding(String(findKey(['name', 'nombre', 'descripcion']) || '')).trim();
           const priceRaw = String(findKey(['price', 'precio', 'costo']) || '0').replace(',', '.');
+          
           if (code && name) {
             const ref = doc(db, 'artifacts', appId, 'public', 'data', 'products', code);
             batch.set(ref, { 
@@ -468,62 +362,9 @@ const AdminDashboard = ({ products, stats, logs, onLogout, setStatus, isReady, u
 
   return (
     <div className="p-4 md:p-12 max-w-7xl mx-auto text-left animate-in fade-in duration-700 pb-40">
-      <div className="flex justify-between items-center mb-10 bg-slate-950 p-8 rounded-[2.5rem] text-white shadow-2xl border-b-8 border-red-600">
-        <h2 className="text-2xl md:text-5xl font-black italic uppercase italic tracking-tighter leading-none text-white">Panel de <span className="text-red-600">Control</span></h2>
-        <button onClick={onLogout} className="bg-red-600 p-4 rounded-xl hover:bg-white hover:text-red-600 transition-all shadow-lg active:scale-90"><LogOut size={24} /></button>
-      </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10">
-        <div className="bg-white p-10 rounded-[3.5rem] border-4 border-dashed border-slate-100 text-center flex flex-col justify-center items-center group hover:border-red-600/30 transition-colors">
-          {!user && <div className="text-red-500 font-bold mb-4 flex items-center gap-2"><AlertCircle size={16}/> ERROR DE CONEXIÓN</div>}
-          {loading ? <Loader2 className="animate-spin text-red-600" size={48} /> : (
-            <>
-              <UploadCloud size={64} className="text-red-600 mb-6" />
-              <h3 className="font-black uppercase italic mb-2 text-xl text-slate-950">Importar Inventario</h3>
-              <p className="text-slate-400 text-sm mb-10 max-w-xs">UTF-8 Automático para Ñ y Acentos.</p>
-              <label className={`px-10 py-5 rounded-2xl font-black cursor-pointer text-xs tracking-widest uppercase transition-all shadow-xl ${!user ? 'bg-slate-200 cursor-not-allowed text-slate-400' : 'bg-slate-950 text-white hover:bg-red-600'}`}>
-                Seleccionar Archivo<input type="file" className="hidden" accept=".xlsx, .csv" onChange={handleImport} disabled={!user} />
-              </label>
-            </>
-          )}
-        </div>
-        <div className="bg-white p-10 rounded-[3.5rem] border-2 border-slate-50 shadow-sm overflow-hidden flex flex-col">
-          <div className="flex items-center gap-3 mb-8"><Eye className="text-red-600" size={28}/><h3 className="font-black uppercase text-lg italic text-slate-950">Radar de Clientes</h3></div>
-          <div className="space-y-3 max-h-[250px] overflow-y-auto no-scrollbar flex-1">
-            {logs.length === 0 ? <p className="text-slate-200 text-center py-10 italic">Sin actividad reciente</p> : logs.map(log => (
-              <div key={log.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-red-600/20 transition-all">
-                <span className="font-bold text-slate-800 uppercase text-xs italic">"{log.term}"</span>
-                <span className="text-[10px] text-slate-400 font-mono">{log.timestamp ? new Date(log.timestamp.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Recién'}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="bg-white p-8 md:p-12 rounded-[4rem] border border-slate-100 shadow-3xl overflow-hidden">
-        <h3 className="font-black uppercase italic mb-8 text-2xl tracking-tighter text-slate-950">Limpieza de Stock ({products.length})</h3>
-        <div className="max-h-[600px] overflow-y-auto no-scrollbar">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="text-[10px] font-black text-slate-400 uppercase border-b-2 border-slate-50 pb-4">
-                <th className="pb-4 px-2">Pieza Detallada</th>
-                <th className="pb-4 text-right">Precio</th>
-                <th className="pb-4 text-right">Eliminar</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {products.map(p => (
-                <tr key={p.id} className="group hover:bg-slate-50 transition-colors">
-                  <td className="py-6 px-2">
-                    <p className="font-bold text-base text-slate-900 group-hover:text-red-600 transition-colors leading-tight mb-1 uppercase">{p.name}</p>
-                    <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">{p.brand} {p.carBrand} {p.model} {p.year}</p>
-                  </td>
-                  <td className="py-6 font-black text-right text-xl italic text-slate-950">${(p.price||0).toFixed(2)}</td>
-                  <td className="py-6 text-right"><button onClick={() => handleDelete(p.id)} className="p-4 bg-slate-100 text-slate-300 hover:bg-red-600 hover:text-white rounded-2xl transition-all shadow-sm"><Trash size={18} /></button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <div className="flex justify-between items-center mb-10 bg-slate-950 p-8 rounded-[2.5rem] text-white shadow-2xl border-b-8 border-red-600"><h2 className="text-2xl md:text-5xl font-black italic uppercase italic tracking-tighter leading-none text-white">Panel de <span className="text-red-600">Control</span></h2><button onClick={onLogout} className="bg-red-600 p-4 rounded-xl hover:bg-white hover:text-red-600 transition-all shadow-lg active:scale-90"><LogOut size={24} /></button></div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10"><div className="bg-white p-10 rounded-[3.5rem] border-4 border-dashed border-slate-100 text-center flex flex-col justify-center items-center group hover:border-red-600/30 transition-colors">{!user && <div className="text-red-500 font-bold mb-4 flex items-center gap-2"><AlertCircle size={16}/> ERROR DE CONEXIÓN</div>}{loading ? <Loader2 className="animate-spin text-red-600" size={48} /> : (<><UploadCloud size={64} className="text-red-600 mb-6" /><h3 className="font-black uppercase italic mb-2 text-xl text-slate-950">Importar Inventario</h3><p className="text-slate-400 text-sm mb-10 max-w-xs">UTF-8 Automático para Ñ y Acentos.</p><label className={`px-10 py-5 rounded-2xl font-black cursor-pointer text-xs tracking-widest uppercase transition-all shadow-xl ${!user ? 'bg-slate-200 cursor-not-allowed text-slate-400' : 'bg-slate-950 text-white hover:bg-red-600'}`}>Seleccionar Archivo<input type="file" className="hidden" accept=".xlsx, .csv" onChange={handleImport} disabled={!user} /></label></>)}</div><div className="bg-white p-10 rounded-[3.5rem] border-2 border-slate-50 shadow-sm overflow-hidden flex flex-col"><div className="flex items-center gap-3 mb-8"><Eye className="text-red-600" size={28}/><h3 className="font-black uppercase text-lg italic text-slate-950">Radar de Clientes</h3></div><div className="space-y-3 max-h-[250px] overflow-y-auto no-scrollbar flex-1">{logs.length === 0 ? <p className="text-slate-200 text-center py-10 italic">Sin actividad reciente</p> : logs.map(log => (<div key={log.id} className="flex justify-between items-center p-4 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-red-600/20 transition-all"><span className="font-bold text-slate-800 uppercase text-xs italic">"{log.term}"</span><span className="text-[10px] text-slate-400 font-mono">{log.timestamp ? new Date(log.timestamp.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Recién'}</span></div>))}</div></div></div>
+      <div className="bg-white p-8 md:p-12 rounded-[4rem] border border-slate-100 shadow-3xl overflow-hidden"><h3 className="font-black uppercase italic mb-8 text-2xl tracking-tighter text-slate-950">Limpieza de Stock ({products.length})</h3><div className="max-h-[600px] overflow-y-auto no-scrollbar"><table className="w-full text-left"><thead><tr className="text-[10px] font-black text-slate-400 uppercase border-b-2 border-slate-50 pb-4"><th className="pb-4 px-2">Pieza Detallada</th><th className="pb-4 text-right">Precio</th><th className="pb-4 text-right">Eliminar</th></tr></thead><tbody className="divide-y divide-slate-50">{products.map(p => (<tr key={p.id} className="group hover:bg-slate-50 transition-colors"><td className="py-6 px-2"><p className="font-bold text-base text-slate-900 group-hover:text-red-600 transition-colors leading-tight mb-1 uppercase">{p.name}</p><p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">{p.brand} {p.carBrand} {p.model} {p.year}</p></td><td className="py-6 font-black text-right text-xl italic text-slate-950">${(p.price||0).toFixed(2)}</td><td className="py-6 text-right"><button onClick={() => handleDelete(p.id)} className="p-4 bg-slate-100 text-slate-300 hover:bg-red-600 hover:text-white rounded-2xl transition-all shadow-sm"><Trash size={18} /></button></td></tr>))}</tbody></table></div></div>
     </div>
   );
 };
